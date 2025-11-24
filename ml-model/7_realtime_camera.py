@@ -16,8 +16,9 @@ sys.path.append(current_dir)
 
 try:
     from utils.hand_detector import HandDetector
+    from utils.temporal_smoother import TemporalSmoother
 except ImportError:
-    print("Error: Could not import HandDetector.")
+    print("Error: Could not import HandDetector or TemporalSmoother.")
     print("Make sure you are running this script from the project root or ml-model directory.")
     sys.exit(1)
 
@@ -78,6 +79,7 @@ def main():
     try:
         print("Initializing MediaPipe Hand Detector...")
         detector = HandDetector(max_hands=1, detection_con=0.7)
+        smoother = TemporalSmoother(buffer_size=10)
     except Exception as e:
         print(f"\nError initializing MediaPipe: {e}")
         print("\nCRITICAL: MediaPipe is required for this script.")
@@ -127,16 +129,20 @@ def main():
                         img_resize = cv2.resize(img_crop, (IMG_SIZE, IMG_SIZE))
                         img_norm = img_resize / 255.0
                         img_input = np.expand_dims(img_norm, axis=0)
-                        
                         # Predict
                         prediction = model.predict(img_input, verbose=0)
                         index = np.argmax(prediction)
                         confidence = prediction[0][index]
                         
-                        label = labels.get(index, str(index))
+                        # Smooth prediction
+                        smoother.add_prediction(index)
+                        smoothed_index = smoother.get_smoothed_prediction()
+                        
+                        label = labels.get(smoothed_index, str(smoothed_index))
                         
                         # Display result
                         if confidence > 0.7:
+                            text = f"{label} ({confidence*100:.0f}%)"
                             text = f"{label} ({confidence*100:.0f}%)"
                             color = (0, 255, 0) # Green
                         else:
