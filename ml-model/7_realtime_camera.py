@@ -139,6 +139,25 @@ def main():
             
             # Prediction (only if model exists)
             if model is not None:
+                try:
+                    # Crop hand
+                    img_crop = img_output[y1:y2, x1:x2]
+                    
+                    if img_crop.size > 0:
+                        # Preprocess
+                        img_resize = cv2.resize(img_crop, (IMG_SIZE, IMG_SIZE))
+                        img_norm = img_resize / 255.0
+                        img_input = np.expand_dims(img_norm, axis=0)
+                        
+                        # Predict
+                        prediction = model.predict(img_input, verbose=0)
+                        index = np.argmax(prediction)
+                        confidence = prediction[0][index]
+                        
+                        # Smooth prediction
+                        smoother.add_prediction(index)
+                        smoothed_index = smoother.get_smoothed_prediction()
+                        
                         label = labels.get(smoothed_index, str(smoothed_index))
                         
                         # Sentence Construction Logic
@@ -152,7 +171,6 @@ def main():
                         if stable_frame_count > STABLE_THRESHOLD and not has_added_current:
                             current_sentence += label
                             has_added_current = True
-                            # Visual feedback (flash effect could be added here)
                         
                         # Display result
                         if confidence > 0.7:
@@ -201,24 +219,6 @@ def main():
                 engine.runAndWait()
         elif key == 8: # Backspace to clear
             current_sentence = ""
-
-    cap.release()
-    cv2.destroyAllWindows()(img, "Hand Detected", (x1, y1 - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
-
-        # Calculate and show FPS
-        c_time = time.time()
-        fps = 1 / (c_time - p_time) if (c_time - p_time) > 0 else 0
-        p_time = c_time
-        
-        cv2.putText(img, f"FPS: {int(fps)}", (10, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
-        # Show frame
-        cv2.imshow("ASL Real-time Recognition", img)
-        
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
 
     cap.release()
     cv2.destroyAllWindows()
