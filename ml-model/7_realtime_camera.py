@@ -9,6 +9,7 @@ import os
 import time
 import json
 import sys
+import pyttsx3
 
 # Add current directory to path to allow imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -87,13 +88,31 @@ def main():
         print("Note: MediaPipe may not support Python 3.13 yet. Try Python 3.10 or 3.11.")
         return
 
+    # Initialize Text-to-Speech
+    try:
+        print("Initializing Text-to-Speech...")
+        engine = pyttsx3.init()
+    except Exception as e:
+        print(f"⚠ Warning: Could not initialize Text-to-Speech: {e}")
+        engine = None
+
     # Load Model
     model, labels = load_model_and_labels()
     
     print("\nStarting camera feed...")
-    print("Press 'q' to quit.")
+    print("Controls:")
+    print("  [SPACE] - Speak sentence")
+    print("  [BACKSPACE] - Clear sentence")
+    print("  [Q] - Quit")
     
     p_time = 0
+    
+    # Sentence construction variables
+    current_sentence = ""
+    last_stable_sign = None
+    stable_frame_count = 0
+    STABLE_THRESHOLD = 20  # Number of frames to hold sign before adding
+    has_added_current = False
     
     while True:
         success, img = cap.read()
@@ -120,29 +139,23 @@ def main():
             
             # Prediction (only if model exists)
             if model is not None:
-                try:
-                    # Crop hand
-                    img_crop = img_output[y1:y2, x1:x2]
-                    
-                    if img_crop.size > 0:
-                        # Preprocess
-                        img_resize = cv2.resize(img_crop, (IMG_SIZE, IMG_SIZE))
-                        img_norm = img_resize / 255.0
-                        img_input = np.expand_dims(img_norm, axis=0)
-                        # Predict
-                        prediction = model.predict(img_input, verbose=0)
-                        index = np.argmax(prediction)
-                        confidence = prediction[0][index]
-                        
-                        # Smooth prediction
-                        smoother.add_prediction(index)
-                        smoothed_index = smoother.get_smoothed_prediction()
-                        
                         label = labels.get(smoothed_index, str(smoothed_index))
+                        
+                        # Sentence Construction Logic
+                        if label == last_stable_sign:
+                            stable_frame_count += 1
+                        else:
+                            stable_frame_count = 0
+                            last_stable_sign = label
+                            has_added_current = False
+                            
+                        if stable_frame_count > STABLE_THRESHOLD and not has_added_current:
+                            current_sentence += label
+                            has_added_current = True
+                            # Visual feedback (flash effect could be added here)
                         
                         # Display result
                         if confidence > 0.7:
-                            text = f"{label} ({confidence*100:.0f}%)"
                             text = f"{label} ({confidence*100:.0f}%)"
                             color = (0, 255, 0) # Green
                         else:
@@ -161,6 +174,36 @@ def main():
             else:
                 # Detection Only Mode
                 cv2.putText(img, "Hand Detected", (x1, y1 - 10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
+
+        # Display Sentence
+        cv2.rectangle(img, (0, img.shape[0] - 60), (img.shape[1], img.shape[0]), (0, 0, 0), cv2.FILLED)
+        cv2.putText(img, f"Sentence: {current_sentence}", (20, img.shape[0] - 20), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+        # Calculate and show FPS
+        c_time = time.time()
+        fps = 1 / (c_time - p_time) if (c_time - p_time) > 0 else 0
+        p_time = c_time
+        
+        cv2.putText(img, f"FPS: {int(fps)}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+        # Show frame
+        cv2.imshow("ASL Real-time Recognition", img)
+        
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+        elif key == ord(' '): # Space to speak
+            if engine and current_sentence:
+                engine.say(current_sentence)
+                engine.runAndWait()
+        elif key == 8: # Backspace to clear
+            current_sentence = ""
+
+    cap.release()
+    cv2.destroyAllWindows()(img, "Hand Detected", (x1, y1 - 10), 
                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
 
         # Calculate and show FPS
