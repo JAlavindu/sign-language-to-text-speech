@@ -5,15 +5,28 @@ echo "ASL Model Training - Quick Setup (macOS/Linux)"
 echo "========================================"
 echo ""
 
-# Check if python3 is installed
-if ! command -v python3 &> /dev/null; then
-    echo "Error: python3 could not be found. Please install Python 3."
+# Find best python version
+if command -v python3.13 &> /dev/null; then
+    PYTHON_CMD="python3.13"
+elif command -v python3.12 &> /dev/null; then
+    PYTHON_CMD="python3.12"
+elif command -v python3.11 &> /dev/null; then
+    PYTHON_CMD="python3.11"
+elif command -v python3.10 &> /dev/null; then
+    PYTHON_CMD="python3.10"
+elif command -v python3 &> /dev/null; then
+    PYTHON_CMD="python3"
+else
+    echo "Error: Python 3 could not be found."
     exit 1
 fi
 
+echo "Using Python: $PYTHON_CMD"
+$PYTHON_CMD --version
+
 echo "[1/4] Creating virtual environment..."
 if [ ! -d "venv" ]; then
-    python3 -m venv venv
+    $PYTHON_CMD -m venv venv
     echo "Virtual environment created."
 else
     echo "Virtual environment already exists."
