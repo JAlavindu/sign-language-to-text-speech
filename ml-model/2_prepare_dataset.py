@@ -12,11 +12,19 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import json
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configuration
-SIGNALAPHASET_PATH = r"e:\UNI sub\ICT\3rd yr\HCI\SignAlphaSet"
-ASL_DATASET_PATH = r"e:\UNI sub\ICT\3rd yr\HCI\asl_dataset"
-OUTPUT_PATH = r"e:\UNI sub\ICT\3rd yr\HCI\sign-language-glove\ml-model\datasets\processed"
+SIGNALAPHASET_PATH = os.getenv("SIGNALAPHASET_PATH", r"e:\UNI sub\ICT\3rd yr\HCI\SignAlphaSet")
+ASL_DATASET_PATH = os.getenv("ASL_DATASET_PATH", r"e:\UNI sub\ICT\3rd yr\HCI\asl_dataset")
+OUTPUT_PATH = os.getenv("PROCESSED_DATASET_PATH", r"e:\UNI sub\ICT\3rd yr\HCI\sign-language-glove\ml-model\datasets\processed")
+
+# If paths are relative, make them absolute based on project root
+if not os.path.isabs(OUTPUT_PATH):
+    OUTPUT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), OUTPUT_PATH)
 
 # Split ratios
 TRAIN_RATIO = 0.70

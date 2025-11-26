@@ -8,4 +8,5 @@ pillow>=10.0.0
 opencv-python>=4.8.0.76
 tqdm>=4.66.1
 jupyter>=1.0.0
+python-dotenv==1.0.0
 

@@ -14,11 +14,25 @@ from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard, CSVLogger
 import matplotlib.pyplot as plt
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configuration
-DATASET_PATH = r"e:\UNI sub\ICT\3rd yr\HCI\sign-language-glove\ml-model\datasets\processed"
-MODEL_SAVE_PATH = r"e:\UNI sub\ICT\3rd yr\HCI\sign-language-glove\ml-model\models"
-LOGS_PATH = r"e:\UNI sub\ICT\3rd yr\HCI\sign-language-glove\ml-model\logs"
+# Get paths from env or use defaults
+DATASET_PATH = os.getenv("PROCESSED_DATASET_PATH", r"e:\UNI sub\ICT\3rd yr\HCI\sign-language-glove\ml-model\datasets\processed")
+MODEL_SAVE_PATH = os.getenv("MODEL_SAVE_PATH", r"e:\UNI sub\ICT\3rd yr\HCI\sign-language-glove\ml-model\models")
+LOGS_PATH = os.getenv("LOGS_PATH", r"e:\UNI sub\ICT\3rd yr\HCI\sign-language-glove\ml-model\logs")
+
+# Resolve relative paths
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if not os.path.isabs(DATASET_PATH):
+    DATASET_PATH = os.path.join(project_root, DATASET_PATH)
+if not os.path.isabs(MODEL_SAVE_PATH):
+    MODEL_SAVE_PATH = os.path.join(project_root, MODEL_SAVE_PATH)
+if not os.path.isabs(LOGS_PATH):
+    LOGS_PATH = os.path.join(project_root, LOGS_PATH)
 
 # Hyperparameters
 IMG_SIZE = 224

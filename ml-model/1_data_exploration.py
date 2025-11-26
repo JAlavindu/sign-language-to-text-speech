@@ -11,10 +11,14 @@ import seaborn as sns
 from PIL import Image
 import numpy as np
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Dataset paths
-SIGNALAPHASET_PATH = r"e:\UNI sub\ICT\3rd yr\HCI\SignAlphaSet"
-ASL_DATASET_PATH = r"e:\UNI sub\ICT\3rd yr\HCI\asl_dataset"
+SIGNALAPHASET_PATH = os.getenv("SIGNALAPHASET_PATH", r"e:\UNI sub\ICT\3rd yr\HCI\SignAlphaSet")
+ASL_DATASET_PATH = os.getenv("ASL_DATASET_PATH", r"e:\UNI sub\ICT\3rd yr\HCI\asl_dataset")
 
 def count_images_per_class(dataset_path, dataset_name):
     """Count images in each class folder"""
