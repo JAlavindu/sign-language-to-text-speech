@@ -6,14 +6,15 @@ echo "========================================"
 echo ""
 
 # Find best python version
-if command -v python3.13 &> /dev/null; then
-    PYTHON_CMD="python3.13"
-elif command -v python3.12 &> /dev/null; then
-    PYTHON_CMD="python3.12"
-elif command -v python3.11 &> /dev/null; then
+# Prioritize 3.11 and 3.10 as they have best compatibility with MediaPipe/TensorFlow
+if command -v python3.11 &> /dev/null; then
     PYTHON_CMD="python3.11"
 elif command -v python3.10 &> /dev/null; then
     PYTHON_CMD="python3.10"
+elif command -v python3.12 &> /dev/null; then
+    PYTHON_CMD="python3.12"
+elif command -v python3.13 &> /dev/null; then
+    PYTHON_CMD="python3.13"
 elif command -v python3 &> /dev/null; then
     PYTHON_CMD="python3"
 else
@@ -38,8 +39,6 @@ source venv/bin/activate
 echo "[3/4] Installing dependencies..."
 pip install --upgrade pip
 pip install -r ml-model/requirements.txt
-# Install additional dependencies
-pip install mediapipe pyttsx3
 
 echo "[4/4] Checking datasets..."
 # Note: This check assumes datasets are in the parent directory, similar to Windows setup
