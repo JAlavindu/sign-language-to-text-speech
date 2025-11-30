@@ -1,6 +1,7 @@
 import numpy as np
 import joblib
 import os
+from sklearn.preprocessing import StandardScaler
 
 class SensorPreprocessor:
     """
@@ -18,7 +19,7 @@ class SensorPreprocessor:
         """
         self.window_size = window_size
         self.num_features = num_features
-        self.scaler = None
+        self.scaler = StandardScaler()
         
     def fit(self, data):
         """
@@ -27,8 +28,7 @@ class SensorPreprocessor:
         Args:
             data (np.array): Training data of shape (N, num_features)
         """
-        # TODO: Implement fitting logic (e.g., using StandardScaler)
-        pass
+        self.scaler.fit(data)
         
     def transform(self, data):
         """
@@ -40,10 +40,7 @@ class SensorPreprocessor:
         Returns:
             np.array: Scaled data.
         """
-        # TODO: Implement transformation logic
-        # Hint: Flex sensors (0-4095) -> 0-1
-        # Hint: IMU data -> Standard Scaler
-        return data
+        return self.scaler.transform(data)
         
     def create_sequences(self, data, labels=None):
         """
@@ -60,16 +57,23 @@ class SensorPreprocessor:
         X = []
         y = []
         
-        # TODO: Implement sliding window logic
-        
+        if len(data) < self.window_size:
+            return np.array(X), np.array(y)
+            
+        # Sliding window with step=1
+        for i in range(len(data) - self.window_size + 1):
+            window = data[i : i + self.window_size]
+            X.append(window)
+            if labels is not None:
+                # Use the label of the last frame in the window
+                y.append(labels[i + self.window_size - 1])
+                
         return np.array(X), np.array(y) if labels is not None else np.array(X)
 
     def save(self, path):
         """Save the preprocessor state."""
-        # joblib.dump(self.scaler, path)
-        pass
+        joblib.dump(self.scaler, path)
         
     def load(self, path):
         """Load the preprocessor state."""
-        # self.scaler = joblib.load(path)
-        pass
+        self.scaler = joblib.load(path)
