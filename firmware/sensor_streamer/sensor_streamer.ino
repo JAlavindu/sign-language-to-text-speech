@@ -27,7 +27,7 @@ bool oldDeviceConnected = false;
 Adafruit_MPU6050 mpu;
 
 // Data Packet Structure
-struct SensorPacket {
+struct __attribute__((packed)) SensorPacket {
   uint32_t timestamp;
   uint16_t flex[5];
   float accel[3];
