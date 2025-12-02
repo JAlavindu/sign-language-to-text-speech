@@ -38,12 +38,18 @@ sign-language-glove/
 ├── ml-model/               # Machine Learning Core
 │   ├── datasets/           # Raw & Processed Data
 │   ├── models/             # Trained .h5 Models
-│   ├── utils/              # Helper Modules (HandDetector, Smoother, etc.)
+│   ├── reports/            # Generated Graphs & Confusion Matrices
+│   ├── utils/              # Helper Modules (HandDetector, Smoother, Fusion, etc.)
 │   ├── 1_data_exploration.py
 │   ├── 2_prepare_dataset.py
 │   ├── 3_train_model.py
-│   ├── 7_realtime_camera.py    # 📷 Main Camera Script
-│   ├── 8_collect_sensor_data.py # 🧤 Sensor Data Collector
+│   ├── 7_realtime_camera.py      # 📷 Camera-Only Demo
+│   ├── 8_collect_sensor_data.py  # 🧤 Sensor Data Collector
+│   ├── 9_train_sensor_model.py   # 🧠 Train Sensor Model
+│   ├── 10_realtime_sensor.py     # 🧤 Sensor-Only Demo
+│   ├── 11_multimodal_fusion.py   # 🚀 Hybrid System Demo
+│   ├── 12_final_app.py           # 🏆 FINAL PRODUCT (TTS + Sentence Builder)
+│   ├── 13_generate_report_graphs.py # 📊 Generate Report Artifacts
 │   └── requirements.txt
 ├── setup_ml.bat            # Windows Setup Script
 └── README.md
