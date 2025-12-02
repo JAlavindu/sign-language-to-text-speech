@@ -48,8 +48,9 @@ sign-language-glove/
 │   ├── 9_train_sensor_model.py   # 🧠 Train Sensor Model
 │   ├── 10_realtime_sensor.py     # 🧤 Sensor-Only Demo
 │   ├── 11_multimodal_fusion.py   # 🚀 Hybrid System Demo
-│   ├── 12_final_app.py           # 🏆 FINAL PRODUCT (TTS + Sentence Builder)
+│   ├── 12_final_app.py           # 🏆 CLI Product (TTS + Sentence Builder)
 │   ├── 13_generate_report_graphs.py # 📊 Generate Report Artifacts
+│   ├── 14_gui_app.py             # 🖥️ Professional GUI Product
 │   └── requirements.txt
 ├── setup_ml.bat            # Windows Setup Script
 └── README.md
