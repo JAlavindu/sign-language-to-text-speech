@@ -1,7 +1,8 @@
 import asyncio
 import struct
 import numpy as np
-import tensorflow as tf
+import torch
+import torch.nn as nn
 import joblib
 import os
 import sys
@@ -13,11 +14,43 @@ from utils.temporal_smoother import TemporalSmoother
 DEVICE_NAME = "ASL_Glove_001"
 SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 CHARACTERISTIC_UUID_TX = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
-MODEL_PATH = os.path.join("models", "sensor_model_final.h5")
-SCALER_PATH = os.path.join("models", "sensor_scaler.pkl")
+MODEL_PATH = os.path.join("models", "sensor_model_best.pth")
+PREPROCESSOR_PATH = os.path.join("models", "sensor_preprocessor.pkl")
 LABELS_PATH = os.path.join("models", "sensor_labels.pkl")
 WINDOW_SIZE = 50
 NUM_FEATURES = 16
+
+# Device config
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+class SensorModel(nn.Module):
+    def __init__(self, num_features, num_classes):
+        super(SensorModel, self).__init__()
+        self.conv1 = nn.Conv1d(in_channels=num_features, out_channels=64, kernel_size=3)
+        self.relu = nn.ReLU()
+        self.bn = nn.BatchNorm1d(64)
+        self.pool = nn.MaxPool1d(kernel_size=2)
+        self.lstm = nn.LSTM(input_size=64, hidden_size=64, batch_first=True)
+        self.dropout1 = nn.Dropout(0.3)
+        self.fc1 = nn.Linear(64, 64)
+        self.fc_dropout = nn.Dropout(0.3)
+        self.fc2 = nn.Linear(64, num_classes)
+        
+    def forward(self, x):
+        x_cnn = x.permute(0, 2, 1)
+        x_cnn = self.conv1(x_cnn)
+        x_cnn = self.relu(x_cnn)
+        x_cnn = self.bn(x_cnn)
+        x_cnn = self.pool(x_cnn)
+        x_lstm = x_cnn.permute(0, 2, 1)
+        lstm_out, _ = self.lstm(x_lstm)
+        last_out = lstm_out[:, -1, :] 
+        out = self.dropout1(last_out)
+        out = self.fc1(out)
+        out = self.relu(out)
+        out = self.fc_dropout(out)
+        out = self.fc2(out)
+        return out
 
 class RealTimeSensor:
     def __init__(self):
@@ -25,21 +58,31 @@ class RealTimeSensor:
         self.model = None
         self.preprocessor = None
         self.label_encoder = None
-        self.smoother = TemporalSmoother(buffer_size=5)
+        self.smoother = TemporalSmoother(window_size=5) # Renamed to window_size to match other scripts
         self.running = True
 
     def load_artifacts(self):
         """Load model, scaler, and labels."""
         try:
             print("Loading model and artifacts...")
-            self.model = tf.keras.models.load_model(MODEL_PATH)
             
-            # Load scaler and wrap in preprocessor
-            scaler = joblib.load(SCALER_PATH)
-            self.preprocessor = SensorPreprocessor(window_size=WINDOW_SIZE, num_features=NUM_FEATURES)
-            self.preprocessor.scaler = scaler
-            
+            # Load labels first to determine num_classes
             self.label_encoder = joblib.load(LABELS_PATH)
+            num_classes = len(self.label_encoder.classes_)
+            
+            # Load model
+            self.model = SensorModel(num_features=NUM_FEATURES, num_classes=num_classes)
+            if os.path.exists(MODEL_PATH):
+                self.model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+                self.model.to(device)
+                self.model.eval()
+            else:
+                 print(f"Model file not found at {MODEL_PATH}")
+                 return False
+
+            # Load preprocessor
+            self.preprocessor = joblib.load(PREPROCESSOR_PATH)
+            
             print("✓ Artifacts loaded successfully")
             return True
         except Exception as e:
@@ -59,77 +102,87 @@ class RealTimeSensor:
             # Flex (5) + Accel (3) + Gyro (3) + Touch (5)
             features = list(unpacked[1:17])
             return features
-        except Exception:
+        except Exception as e:
+            print(f"Parse error: {e}")
             return None
 
     def notification_handler(self, sender, data):
-        """Handle incoming BLE data."""
+        """Handle incoming BLE notifications."""
         features = self.parse_packet(data)
         if features:
             self.buffer.append(features)
             
-            # Keep buffer at window size
+            # Keep buffer size in check
             if len(self.buffer) > WINDOW_SIZE:
-                self.buffer.pop(0)
-                
+                 self.buffer.pop(0)
+            
             # Run inference if buffer is full
             if len(self.buffer) == WINDOW_SIZE:
-                self.predict()
+                self.run_inference()
 
-    def predict(self):
-        """Run model inference on current buffer."""
-        # Convert buffer to numpy array
-        data = np.array(self.buffer)
-        
-        # Preprocess (Scale)
-        # Note: transform expects (N, features), returns (N, features)
-        scaled_data = self.preprocessor.transform(data)
-        
-        # Reshape for model: (1, window_size, features)
-        input_data = scaled_data.reshape(1, WINDOW_SIZE, NUM_FEATURES)
-        
-        # Predict
-        prediction = self.model.predict(input_data, verbose=0)
-        predicted_idx = np.argmax(prediction)
-        confidence = np.max(prediction)
-        
-        # Smooth
-        self.smoother.add_prediction(predicted_idx)
-        smoothed_idx = self.smoother.get_smoothed_prediction()
-        
-        if smoothed_idx is not None:
-            label = self.label_encoder.inverse_transform([smoothed_idx])[0]
-            print(f"\rPrediction: {label} ({confidence*100:.1f}%)", end="")
-
-    async def run(self):
-        if not self.load_artifacts():
+    def run_inference(self):
+        """Preprocess buffer and run inference."""
+        if not self.model or not self.preprocessor:
             return
 
-        print(f"Scanning for {DEVICE_NAME}...")
-        device = await BleakScanner.find_device_by_name(DEVICE_NAME)
-        
-        if not device:
-            print(f"Device '{DEVICE_NAME}' not found.")
-            return
+        try:
+            # 1. Preprocess
+            # Need to transform the buffer using `transform` logic from preprocessor
+            # We assume Buffer is (50, 16)
+            data_array = np.array(self.buffer)
+            
+            # Important: Preprocessor expects shape (N, 16). 
+            scaled_data = self.preprocessor.transform(data_array)
+            
+            # Expand dims to (1, 50, 16) for batch
+            input_tensor = torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(device)
+            
+            # 2. Predict
+            with torch.no_grad():
+                outputs = self.model(input_tensor)
+                probabilities = torch.nn.functional.softmax(outputs, dim=1)
+                confidence, predicted = torch.max(probabilities, 1)
+                
+                idx = predicted.item()
+                conf = confidence.item()
+            
+            # 3. Label
+            label = self.label_encoder.inverse_transform([idx])[0]
+            
+            # 4. Smooth
+            self.smoother.add_prediction(idx) # Using index for smoothing
+            smoothed_idx = self.smoother.get_smoothed_prediction()
+            smoothed_label = self.label_encoder.inverse_transform([smoothed_idx])[0]
+            
+            print(f"Pred: {label} ({conf:.2f}) -> Smooth: {smoothed_label}")
+            
+        except Exception as e:
+            print(f"Inference error: {e}")
 
-        print(f"Connecting to {device.address}...")
-        async with BleakClient(device) as client:
-            print("Connected! Streaming data...")
-            
-            await client.start_notify(CHARACTERISTIC_UUID_TX, self.notification_handler)
-            
-            print("Press Ctrl+C to stop")
-            try:
-                while self.running:
-                    await asyncio.sleep(0.1)
-            except KeyboardInterrupt:
-                pass
-            finally:
-                await client.stop_notify(CHARACTERISTIC_UUID_TX)
+async def run_ble_client():
+    sensor = RealTimeSensor()
+    if not sensor.load_artifacts():
+        return
+
+    print(f"Scanning for {DEVICE_NAME}...")
+    device_ble = await BleakScanner.find_device_by_name(DEVICE_NAME)
+    
+    if not device_ble:
+        print(f"Device {DEVICE_NAME} not found.")
+        return
+
+    print(f"Connecting to {device_ble.address}...")
+    async with BleakClient(device_ble.address) as client:
+        print("Connected!")
+        
+        await client.start_notify(CHARACTERISTIC_UUID_TX, sensor.notification_handler)
+        print("Listening for data... (Ctrl+C to stop)")
+        
+        while sensor.running:
+            await asyncio.sleep(1)
 
 if __name__ == "__main__":
-    app = RealTimeSensor()
     try:
-        asyncio.run(app.run())
+        asyncio.run(run_ble_client())
     except KeyboardInterrupt:
-        print("\nStopped.")
+        print("\nStopping...")
