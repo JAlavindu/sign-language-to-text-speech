@@ -4,7 +4,7 @@ echo ASL Model Training - Quick Setup
 echo ========================================
 echo.
 
-cd /d "e:\UNI sub\ICT\3rd yr\HCI\sign-language-glove"
+cd /d "E:\Lavindu\HCI\sign-language-to-text-speech"
 
 echo [1/4] Activating virtual environment...
 call venv\Scripts\activate.bat
@@ -17,18 +17,18 @@ if errorlevel 1 (
 echo.
 
 echo [2/4] Installing dependencies...
-pip install --upgrade pip
-pip install -r ml-model\requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r ml-model\requirements.txt
 echo.
 
 echo [3/4] Checking datasets...
-if exist "e:\UNI sub\ICT\3rd yr\HCI\SignAlphaSet" (
+if exist "E:\Lavindu\HCI\SignAlphaSet" (
     echo     [OK] SignAlphaSet found
 ) else (
     echo     [WARNING] SignAlphaSet not found!
 )
 
-if exist "e:\UNI sub\ICT\3rd yr\HCI\asl_dataset" (
+if exist "E:\Lavindu\HCI\asl_dataset" (
     echo     [OK] asl_dataset found
 ) else (
     echo     [WARNING] asl_dataset not found!
