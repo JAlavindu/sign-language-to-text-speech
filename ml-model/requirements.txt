@@ -1,5 +1,7 @@
-tensorflow<2.16
-numpy<2.0.0
+torch
+torchvision
+torchaudio
+numpy
 pandas
 matplotlib
 seaborn

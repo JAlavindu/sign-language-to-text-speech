@@ -1,5 +1,10 @@
 import cv2
 import mediapipe as mp
+# Explicitly import solutions to workaround potential import issues
+try:
+    import mediapipe.python.solutions
+except ImportError:
+    pass
 import numpy as np
 
 class HandDetector:
@@ -15,14 +20,20 @@ class HandDetector:
             min_detection_confidence (float): Minimum confidence value ([0.0, 1.0]) for detection.
             min_tracking_confidence (float): Minimum confidence value ([0.0, 1.0]) for tracking.
         """
-        self.mp_hands = mp.solutions.hands
+        try:
+            self.mp_hands = mp.solutions.hands
+            self.mp_draw = mp.solutions.drawing_utils
+        except AttributeError:
+            import mediapipe.python.solutions as solutions
+            self.mp_hands = solutions.hands
+            self.mp_draw = solutions.drawing_utils
+
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=max_num_hands,
             min_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence
         )
-        self.mp_draw = mp.solutions.drawing_utils
 
     def process(self, frame, padding=20):
         """
