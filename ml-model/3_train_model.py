@@ -1,32 +1,35 @@
 """
 Main Training Script for ASL Recognition Model
-Uses Transfer Learning with MobileNetV2
+Uses Transfer Learning with MobileNetV2 (PyTorch)
 """
 
 import os
 import json
+import time
+import copy
 import numpy as np
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.applications import MobileNetV2
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard, CSVLogger
 import matplotlib.pyplot as plt
 from datetime import datetime
 from dotenv import load_dotenv
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.optim import lr_scheduler
+import torchvision
+from torchvision import datasets, models, transforms
 
 # Load environment variables
 load_dotenv()
 
 # Configuration
 # Get paths from env or use defaults
-DATASET_PATH = os.getenv("PROCESSED_DATASET_PATH", r"e:\UNI sub\ICT\3rd yr\HCI\sign-language-glove\ml-model\datasets\processed")
-MODEL_SAVE_PATH = os.getenv("MODEL_SAVE_PATH", r"e:\UNI sub\ICT\3rd yr\HCI\sign-language-glove\ml-model\models")
-LOGS_PATH = os.getenv("LOGS_PATH", r"e:\UNI sub\ICT\3rd yr\HCI\sign-language-glove\ml-model\logs")
+DATASET_PATH = os.getenv("PROCESSED_DATASET_PATH", r"E:\Lavindu\HCI\sign-language-to-text-speech\ml-model\datasets\processed")
+MODEL_SAVE_PATH = os.getenv("MODEL_SAVE_PATH", r"E:\Lavindu\HCI\sign-language-to-text-speech\ml-model\models")
+LOGS_PATH = os.getenv("LOGS_PATH", r"E:\Lavindu\HCI\sign-language-to-text-speech\ml-model\logs")
 
 # Resolve relative paths
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if not os.path.isabs(DATASET_PATH):
     DATASET_PATH = os.path.join(project_root, DATASET_PATH)
 if not os.path.isabs(MODEL_SAVE_PATH):
@@ -39,7 +42,6 @@ IMG_SIZE = 224
 BATCH_SIZE = 32
 EPOCHS = 50
 LEARNING_RATE = 0.001
-FINE_TUNE_AT = 100  # Unfreeze last 30 layers after initial training
 
 # Create directories
 os.makedirs(MODEL_SAVE_PATH, exist_ok=True)
@@ -47,361 +49,239 @@ os.makedirs(LOGS_PATH, exist_ok=True)
 
 def load_class_mapping():
     """Load class names and mapping"""
-    with open(os.path.join(DATASET_PATH, 'class_mapping.json'), 'r') as f:
+    mapping_path = os.path.join(DATASET_PATH, 'class_mapping.json')
+    if not os.path.exists(mapping_path):
+        raise FileNotFoundError(f"Mapping file not found at {mapping_path}")
+        
+    with open(mapping_path, 'r') as f:
         mapping = json.load(f)
     return mapping
 
-def create_data_generators():
-    """Create data generators with augmentation"""
+def create_dataloaders():
+    """Create PyTorch DataLoaders with augmentation"""
     print(f"\n{'='*60}")
-    print("Creating Data Generators")
+    print("Creating Data Loaders")
     print(f"{'='*60}")
     
-    # Training data augmentation (realistic for hand gestures)
-    train_datagen = ImageDataGenerator(
-        rescale=1./255,
-        rotation_range=20,           # ±20° rotation
-        width_shift_range=0.2,       # 20% horizontal shift
-        height_shift_range=0.2,      # 20% vertical shift
-        shear_range=0.15,            # Perspective distortion
-        zoom_range=0.2,              # Zoom in/out
-        horizontal_flip=False,        # DON'T flip (signs are directional!)
-        brightness_range=[0.8, 1.2], # Lighting variation
-        fill_mode='nearest'
-    )
+    # Data augmentation and normalization for training
+    # Just normalization for validation/test
+    data_transforms = {
+        'train': transforms.Compose([
+            transforms.Resize((IMG_SIZE, IMG_SIZE)),
+            transforms.RandomRotation(20),
+            transforms.RandomAffine(degrees=0, translate=(0.2, 0.2), shear=15, scale=(0.8, 1.2)),
+            transforms.ColorJitter(brightness=0.2),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ]),
+        'validation': transforms.Compose([
+            transforms.Resize((IMG_SIZE, IMG_SIZE)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ]),
+        'test': transforms.Compose([
+            transforms.Resize((IMG_SIZE, IMG_SIZE)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ]),
+    }
+
+    image_datasets = {x: datasets.ImageFolder(os.path.join(DATASET_PATH, x), data_transforms[x])
+                      for x in ['train', 'validation', 'test']}
     
-    # Validation and test data (no augmentation, only rescaling)
-    val_test_datagen = ImageDataGenerator(rescale=1./255)
+    dataloaders = {x: torch.utils.data.DataLoader(image_datasets[x], batch_size=BATCH_SIZE,
+                                                 shuffle=(x == 'train'), num_workers=4)
+                   for x in ['train', 'validation', 'test']}
     
-    # Load datasets
-    train_generator = train_datagen.flow_from_directory(
-        os.path.join(DATASET_PATH, 'train'),
-        target_size=(IMG_SIZE, IMG_SIZE),
-        batch_size=BATCH_SIZE,
-        class_mode='categorical',
-        shuffle=True
-    )
+    dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'validation', 'test']}
+    class_names = image_datasets['train'].classes
     
-    val_generator = val_test_datagen.flow_from_directory(
-        os.path.join(DATASET_PATH, 'validation'),
-        target_size=(IMG_SIZE, IMG_SIZE),
-        batch_size=BATCH_SIZE,
-        class_mode='categorical',
-        shuffle=False
-    )
-    
-    test_generator = val_test_datagen.flow_from_directory(
-        os.path.join(DATASET_PATH, 'test'),
-        target_size=(IMG_SIZE, IMG_SIZE),
-        batch_size=BATCH_SIZE,
-        class_mode='categorical',
-        shuffle=False
-    )
-    
-    print(f"\n✓ Training samples: {train_generator.samples}")
-    print(f"✓ Validation samples: {val_generator.samples}")
-    print(f"✓ Test samples: {test_generator.samples}")
-    print(f"✓ Number of classes: {train_generator.num_classes}")
-    print(f"✓ Image size: {IMG_SIZE}x{IMG_SIZE}")
+    print(f"✓ Training samples: {dataset_sizes['train']}")
+    print(f"✓ Validation samples: {dataset_sizes['validation']}")
+    print(f"✓ Test samples: {dataset_sizes['test']}")
+    print(f"✓ Number of classes: {len(class_names)}")
     print(f"✓ Batch size: {BATCH_SIZE}")
     
-    return train_generator, val_generator, test_generator
+    return dataloaders, dataset_sizes, class_names
 
-def build_model(num_classes):
-    """Build transfer learning model with MobileNetV2"""
-    print(f"\n{'='*60}")
-    print("Building Model Architecture")
-    print(f"{'='*60}")
-    
-    # Load pre-trained MobileNetV2 (without top classification layer)
-    base_model = MobileNetV2(
-        input_shape=(IMG_SIZE, IMG_SIZE, 3),
-        include_top=False,
-        weights='imagenet'
-    )
-    
-    # Freeze base model initially
-    base_model.trainable = False
-    
-    print(f"\nBase model: MobileNetV2")
-    print(f"✓ Pre-trained on ImageNet")
-    print(f"✓ Total layers: {len(base_model.layers)}")
-    print(f"✓ Trainable: {base_model.trainable}")
-    
-    # Build custom top layers
-    inputs = keras.Input(shape=(IMG_SIZE, IMG_SIZE, 3))
-    
-    # Preprocessing
-    x = keras.applications.mobilenet_v2.preprocess_input(inputs)
-    
-    # Base model
-    x = base_model(x, training=False)
-    
-    # Custom classification head
-    x = layers.GlobalAveragePooling2D()(x)
-    x = layers.Dense(256, activation='relu', name='dense_1')(x)
-    x = layers.Dropout(0.5)(x)
-    x = layers.Dense(128, activation='relu', name='dense_2')(x)
-    x = layers.Dropout(0.3)(x)
-    outputs = layers.Dense(num_classes, activation='softmax', name='predictions')(x)
-    
-    model = keras.Model(inputs, outputs)
-    
-    print(f"\nModel architecture:")
-    print(f"  Input: {IMG_SIZE}x{IMG_SIZE}x3")
-    print(f"  → MobileNetV2 (frozen)")
-    print(f"  → GlobalAveragePooling2D")
-    print(f"  → Dense(256) + Dropout(0.5)")
-    print(f"  → Dense(128) + Dropout(0.3)")
-    print(f"  → Dense({num_classes}) [softmax]")
-    
-    return model, base_model
+def train_model(model, criterion, optimizer, scheduler, dataloaders, dataset_sizes, device, num_epochs=25):
+    """Training loop"""
+    since = time.time()
 
-def compile_model(model, learning_rate):
-    """Compile model with optimizer and loss"""
-    model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
-        loss='categorical_crossentropy',
-        metrics=['accuracy', keras.metrics.TopKCategoricalAccuracy(k=3, name='top_3_accuracy')]
-    )
-    print(f"\n✓ Model compiled")
-    print(f"  Optimizer: Adam (lr={learning_rate})")
-    print(f"  Loss: Categorical Crossentropy")
-    print(f"  Metrics: Accuracy, Top-3 Accuracy")
+    best_model_wts = copy.deepcopy(model.state_dict())
+    best_acc = 0.0
+    
+    history = {
+        'train_loss': [], 'train_acc': [],
+        'val_loss': [], 'val_acc': []
+    }
 
-def create_callbacks(model_name):
-    """Create training callbacks"""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    callbacks = [
-        # Save best model
-        ModelCheckpoint(
-            filepath=os.path.join(MODEL_SAVE_PATH, f'{model_name}_best.h5'),
-            monitor='val_accuracy',
-            mode='max',
-            save_best_only=True,
-            verbose=1
-        ),
-        
-        # Early stopping
-        EarlyStopping(
-            monitor='val_loss',
-            patience=10,
-            restore_best_weights=True,
-            verbose=1
-        ),
-        
-        # Reduce learning rate on plateau
-        ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,
-            patience=5,
-            min_lr=1e-7,
-            verbose=1
-        ),
-        
-        # TensorBoard logging
-        TensorBoard(
-            log_dir=os.path.join(LOGS_PATH, f'{model_name}_{timestamp}'),
-            histogram_freq=1,
-            write_graph=True
-        ),
-        
-        # CSV logging
-        CSVLogger(
-            filename=os.path.join(LOGS_PATH, f'{model_name}_{timestamp}.csv'),
-            append=True
-        )
-    ]
-    
-    print(f"\n✓ Callbacks configured:")
-    print(f"  • ModelCheckpoint (save best model)")
-    print(f"  • EarlyStopping (patience=10)")
-    print(f"  • ReduceLROnPlateau (factor=0.5, patience=5)")
-    print(f"  • TensorBoard logging")
-    print(f"  • CSV logging")
-    
-    return callbacks
+    for epoch in range(num_epochs):
+        print(f'Epoch {epoch+1}/{num_epochs}')
+        print('-' * 10)
 
-def plot_training_history(history, model_name):
-    """Plot and save training history"""
-    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
-    
-    # Accuracy plot
-    axes[0].plot(history.history['accuracy'], label='Train Accuracy', linewidth=2)
-    axes[0].plot(history.history['val_accuracy'], label='Val Accuracy', linewidth=2)
-    axes[0].set_xlabel('Epoch', fontsize=12)
-    axes[0].set_ylabel('Accuracy', fontsize=12)
-    axes[0].set_title('Model Accuracy', fontsize=14, fontweight='bold')
-    axes[0].legend(fontsize=10)
-    axes[0].grid(True, alpha=0.3)
-    
-    # Loss plot
-    axes[1].plot(history.history['loss'], label='Train Loss', linewidth=2)
-    axes[1].plot(history.history['val_loss'], label='Val Loss', linewidth=2)
-    axes[1].set_xlabel('Epoch', fontsize=12)
-    axes[1].set_ylabel('Loss', fontsize=12)
-    axes[1].set_title('Model Loss', fontsize=14, fontweight='bold')
-    axes[1].legend(fontsize=10)
-    axes[1].grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plot_path = os.path.join(LOGS_PATH, f'{model_name}_training_history.png')
-    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-    print(f"\n✓ Training history plot saved: {plot_path}")
-    plt.close()
+        # Each epoch has a training and validation phase
+        for phase in ['train', 'validation']:
+            if phase == 'train':
+                model.train()  # Set model to training mode
+            else:
+                model.eval()   # Set model to evaluate mode
 
-def train_phase1(model, train_gen, val_gen, callbacks, initial_epochs):
-    """Phase 1: Train only top layers (base frozen)"""
-    print(f"\n{'='*60}")
-    print("PHASE 1: Training Top Layers (Base Frozen)")
-    print(f"{'='*60}")
-    print(f"Epochs: {initial_epochs}")
-    print(f"Learning rate: {LEARNING_RATE}")
-    
-    history = model.fit(
-        train_gen,
-        epochs=initial_epochs,
-        validation_data=val_gen,
-        callbacks=callbacks,
-        verbose=1
-    )
-    
-    return history
+            running_loss = 0.0
+            running_corrects = 0
 
-def train_phase2(model, base_model, train_gen, val_gen, callbacks, total_epochs, initial_epochs):
-    """Phase 2: Fine-tune with unfrozen layers"""
-    print(f"\n{'='*60}")
-    print("PHASE 2: Fine-Tuning (Unfreezing Layers)")
-    print(f"{'='*60}")
+            # Iterate over data.
+            for inputs, labels in dataloaders[phase]:
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+
+                # zero the parameter gradients
+                optimizer.zero_grad()
+
+                # forward
+                # track history if only in train
+                with torch.set_grad_enabled(phase == 'train'):
+                    outputs = model(inputs)
+                    _, preds = torch.max(outputs, 1)
+                    loss = criterion(outputs, labels)
+
+                    # backward + optimize only if in training phase
+                    if phase == 'train':
+                        loss.backward()
+                        optimizer.step()
+
+                # statistics
+                running_loss += loss.item() * inputs.size(0)
+                running_corrects += torch.sum(preds == labels.data)
+            
+            if phase == 'train':
+                scheduler.step()
+
+            epoch_loss = running_loss / dataset_sizes[phase]
+            epoch_acc = running_corrects.double() / dataset_sizes[phase]
+
+            print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
+            
+            if phase == 'train':
+                history['train_loss'].append(epoch_loss)
+                history['train_acc'].append(epoch_acc.item())
+            else:
+                history['val_loss'].append(epoch_loss)
+                history['val_acc'].append(epoch_acc.item())
+
+            # deep copy the model
+            if phase == 'validation' and epoch_acc > best_acc:
+                best_acc = epoch_acc
+                best_model_wts = copy.deepcopy(model.state_dict())
+                torch.save(model.state_dict(), os.path.join(MODEL_SAVE_PATH, 'best_model.pth'))
+
+        print()
+
+    time_elapsed = time.time() - since
+    print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+    print(f'Best val Acc: {best_acc:4f}')
+
+    # load best model weights
+    model.load_state_dict(best_model_wts)
+    return model, history
+
+def plot_history(history, model_name):
+    """Plot training history"""
+    plt.figure(figsize=(12, 4))
     
-    # Unfreeze base model layers
-    base_model.trainable = True
+    plt.subplot(1, 2, 1)
+    plt.plot(history['train_acc'], label='Train Accuracy')
+    plt.plot(history['val_acc'], label='Val Accuracy')
+    plt.title('Accuracy')
+    plt.legend()
     
-    # Freeze early layers, unfreeze last layers
-    for layer in base_model.layers[:FINE_TUNE_AT]:
-        layer.trainable = False
+    plt.subplot(1, 2, 2)
+    plt.plot(history['train_loss'], label='Train Loss')
+    plt.plot(history['val_loss'], label='Val Loss')
+    plt.title('Loss')
+    plt.legend()
     
-    trainable_layers = sum([layer.trainable for layer in base_model.layers])
-    print(f"\nUnfrozen {trainable_layers} layers (from layer {FINE_TUNE_AT})")
-    
-    # Re-compile with lower learning rate
-    fine_tune_lr = LEARNING_RATE / 10
-    model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=fine_tune_lr),
-        loss='categorical_crossentropy',
-        metrics=['accuracy', keras.metrics.TopKCategoricalAccuracy(k=3, name='top_3_accuracy')]
-    )
-    
-    print(f"New learning rate: {fine_tune_lr}")
-    print(f"Fine-tuning for {total_epochs - initial_epochs} more epochs")
-    
-    history_fine = model.fit(
-        train_gen,
-        epochs=total_epochs,
-        initial_epoch=initial_epochs,
-        validation_data=val_gen,
-        callbacks=callbacks,
-        verbose=1
-    )
-    
-    return history_fine
+    plot_path = os.path.join(LOGS_PATH, f'{model_name}_history.png')
+    plt.savefig(plot_path)
+    print(f"Training history saved to {plot_path}")
 
 def main():
-    """Main training pipeline"""
     print("\n" + "="*60)
-    print("ASL SIGN LANGUAGE RECOGNITION - MODEL TRAINING")
+    print("ASL SIGN LANGUAGE RECOGNITION - PyTorch Training")
     print("="*60)
     
-    # GPU check
-    physical_devices = tf.config.list_physical_devices('GPU')
-    if physical_devices:
-        print(f"\n✓ GPU available: {physical_devices}")
-        tf.config.experimental.set_memory_growth(physical_devices[0], True)
-    else:
-        print(f"\n⚠ No GPU detected, using CPU (training will be slower)")
+    # Check for GPU
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
     
     # Load class mapping
     class_mapping = load_class_mapping()
     num_classes = class_mapping['num_classes']
-    print(f"\n✓ Loaded class mapping: {num_classes} classes")
+    print(f"✓ Loaded mapping for {num_classes} classes")
     
-    # Create data generators
-    train_gen, val_gen, test_gen = create_data_generators()
+    # Prepare Data
+    dataloaders, dataset_sizes, class_names = create_dataloaders()
     
-    # Build model
-    model, base_model = build_model(num_classes)
+    # Build Model (MobileNetV2)
+    print(f"\nBuilding MobileNetV2 Model...")
+    model_ft = models.mobilenet_v2(weights='DEFAULT')
     
-    # Compile model
-    compile_model(model, LEARNING_RATE)
+    # Freeze parameters so we don't backprop through them
+    for param in model_ft.parameters():
+        param.requires_grad = False
+        
+    # Replace the classifier head
+    # MobileNetV2 classifier is :
+    # (classifier): Sequential(
+    #    (0): Dropout(p=0.2, inplace=False)
+    #    (1): Linear(in_features=1280, out_features=1000, bias=True)
+    #  )
+    num_ftrs = model_ft.classifier[1].in_features
     
-    # Print model summary
-    print(f"\n{'='*60}")
-    print("Model Summary")
-    print(f"{'='*60}")
-    model.summary()
-    
-    # Create callbacks
-    callbacks = create_callbacks('asl_model')
-    
-    # Calculate epochs for each phase
-    initial_epochs = int(EPOCHS * 0.6)  # 60% for phase 1
-    
-    # Phase 1: Train top layers
-    history_phase1 = train_phase1(model, train_gen, val_gen, callbacks, initial_epochs)
-    
-    # Phase 2: Fine-tune
-    history_phase2 = train_phase2(
-        model, base_model, train_gen, val_gen, callbacks, EPOCHS, initial_epochs
+    # New Head
+    model_ft.classifier = nn.Sequential(
+        nn.Dropout(0.5),
+        nn.Linear(num_ftrs, 256),
+        nn.ReLU(),
+        nn.Dropout(0.3),
+        nn.Linear(256, num_classes)
     )
     
-    # Combine histories
-    combined_history = {
-        'accuracy': history_phase1.history['accuracy'] + history_phase2.history['accuracy'],
-        'val_accuracy': history_phase1.history['val_accuracy'] + history_phase2.history['val_accuracy'],
-        'loss': history_phase1.history['loss'] + history_phase2.history['loss'],
-        'val_loss': history_phase1.history['val_loss'] + history_phase2.history['val_loss']
-    }
+    model_ft = model_ft.to(device)
     
-    # Create history object for plotting
-    class HistoryObject:
-        def __init__(self, history_dict):
-            self.history = history_dict
+    criterion = nn.CrossEntropyLoss()
     
-    combined_hist = HistoryObject(combined_history)
+    # Observe that only parameters of final layer are being optimized as
+    # opposed to before.
+    optimizer_ft = optim.Adam(model_ft.classifier.parameters(), lr=LEARNING_RATE)
     
-    # Plot training history
-    plot_training_history(combined_hist, 'asl_model')
+    # Decay LR by a factor of 0.1 every 7 epochs
+    exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
     
-    # Evaluate on test set
-    print(f"\n{'='*60}")
-    print("Evaluating on Test Set")
-    print(f"{'='*60}")
+    # Train Phase 1 (Heads only)
+    print("\nStarting Training (Heads)...")
+    model_ft, history = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
+                           dataloaders, dataset_sizes, device, num_epochs=10)
     
-    test_loss, test_acc, test_top3 = model.evaluate(test_gen, verbose=1)
-    print(f"\n✓ Test Results:")
-    print(f"  Test Accuracy: {test_acc*100:.2f}%")
-    print(f"  Test Top-3 Accuracy: {test_top3*100:.2f}%")
-    print(f"  Test Loss: {test_loss:.4f}")
+    # Fine Tuning (Optional - unfreeze some layers)
+    print("\nUnfreezing layers for Fine-Tuning...")
+    for param in model_ft.parameters():
+        param.requires_grad = True
+        
+    optimizer_ft = optim.Adam(model_ft.parameters(), lr=LEARNING_RATE/10)
+    exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
     
-    # Save final model
-    final_model_path = os.path.join(MODEL_SAVE_PATH, 'asl_model_final.h5')
-    model.save(final_model_path)
-    print(f"\n✓ Final model saved: {final_model_path}")
+    model_ft, history_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
+                           dataloaders, dataset_sizes, device, num_epochs=EPOCHS-10)
+                           
+    # Combine histories if needed, or just plot the fine-tuning part
     
-    # Save model in SavedModel format (for TFLite conversion)
-    saved_model_path = os.path.join(MODEL_SAVE_PATH, 'asl_model_saved')
-    model.save(saved_model_path)
-    print(f"✓ SavedModel format saved: {saved_model_path}")
+    # Save Final Model
+    final_path = os.path.join(MODEL_SAVE_PATH, 'asl_model_final.pth')
+    torch.save(model_ft.state_dict(), final_path)
+    print(f"Final model saved to {final_path}")
     
-    print(f"\n{'='*60}")
-    print("TRAINING COMPLETE!")
-    print(f"{'='*60}")
-    print(f"\nNext steps:")
-    print(f"  1. Run 4_evaluate_model.py for detailed evaluation")
-    print(f"  2. Run 5_optimize_model.py to create TFLite versions")
-    print(f"  3. Run 6_test_realtime.py for real-time testing")
-    print(f"\n{'='*60}\n")
+    plot_history(history_ft, 'asl_model_finetuned')
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
