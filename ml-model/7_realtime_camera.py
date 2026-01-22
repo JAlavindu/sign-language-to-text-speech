@@ -1,6 +1,6 @@
 """
 Real-time ASL Recognition Script
-"The Eyes" of the system - Detects hands and predicts signs
+"The Eyes" of the system - Detects hands and predicts signs (PyTorch)
 """
 
 import cv2
@@ -10,6 +10,11 @@ import time
 import json
 import sys
 import pyttsx3
+from PIL import Image
+
+import torch
+import torch.nn as nn
+from torchvision import models, transforms
 
 # Add current directory to path to allow imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -24,175 +29,207 @@ except ImportError:
     sys.exit(1)
 
 # Configuration
-MODEL_PATH = os.path.join(current_dir, "models", "asl_model_final.h5")
+MODEL_PATH = os.path.join(current_dir, "models", "asl_model_final.pth")
 CLASS_MAPPING_PATH = os.path.join(current_dir, "datasets", "processed", "class_mapping.json")
 IMG_SIZE = 224
+
+# Device config
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def load_model_and_labels():
     """Load the trained model and class labels"""
     model = None
     labels = {}
+    num_classes = 36  # Default to 36 (0-9, A-Z)
     
-    # Load Model
-    if os.path.exists(MODEL_PATH):
-        try:
-            import tensorflow as tf
-            print("Loading model... (this might take a moment)")
-            model = tf.keras.models.load_model(MODEL_PATH)
-            print("✓ Model loaded successfully")
-        except Exception as e:
-            print(f"⚠ Error loading model: {e}")
-    else:
-        print(f"⚠ Model not found at {MODEL_PATH}")
-        print("Running in 'Detection Only' mode.")
-
-    # Load Labels
+    # Load Labels first to know num_classes
     if os.path.exists(CLASS_MAPPING_PATH):
         try:
             with open(CLASS_MAPPING_PATH, 'r') as f:
                 mapping = json.load(f)
-                # Handle both formats of mapping
-                if 'idx_to_class' in mapping:
-                    labels = mapping['idx_to_class']
-                else:
-                    labels = mapping
-                
-                # Ensure keys are integers
-                labels = {int(k): v for k, v in labels.items()}
-            print(f"✓ Loaded {len(labels)} class labels")
+            
+            # Use idx_to_class if available (preferred)
+            if 'idx_to_class' in mapping:
+                labels = {int(k): v for k, v in mapping['idx_to_class'].items()}
+            elif 'class_to_idx' in mapping:
+                # Reverse the class_to_idx mapping
+                labels = {v: k for k, v in mapping['class_to_idx'].items()}
+            
+            # Get num_classes from the mapping if available
+            if 'num_classes' in mapping:
+                num_classes = mapping['num_classes']
+            else:
+                num_classes = len(labels)
+            
+            print(f"✓ Loaded {num_classes} class labels")
+            print(f"  Classes: {', '.join([labels[i] for i in sorted(labels.keys())[:10]])}...")
+            
         except Exception as e:
             print(f"⚠ Error loading labels: {e}")
-    
+            print(f"  Using default num_classes = {num_classes}")
+    else:
+        print(f"⚠ Labels not found at {CLASS_MAPPING_PATH}")
+        print(f"  Using default num_classes = {num_classes}")
+
+    # Load Model
+    if os.path.exists(MODEL_PATH):
+        try:
+            print(f"Loading model from {MODEL_PATH}...")
+            
+            # Rebuild architecture with correct num_classes
+            model = models.mobilenet_v2(weights=None)
+            num_ftrs = model.classifier[1].in_features
+            model.classifier = nn.Sequential(
+                nn.Dropout(0.5),
+                nn.Linear(num_ftrs, 256),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(256, num_classes)
+            )
+            
+            # Load weights
+            state_dict = torch.load(MODEL_PATH, map_location=device)
+            model.load_state_dict(state_dict)
+            model.to(device)
+            model.eval()
+            
+            print("✓ Model loaded successfully")
+                
+        except Exception as e:
+            print(f"⚠ Error loading model: {e}")
+            model = None
+    else:
+        print(f"⚠ Model not found at {MODEL_PATH}")
+        print("Running in 'Detection Only' mode.")
+
     return model, labels
 
 def main():
-    print("\n" + "="*60)
-    print("ASL REAL-TIME RECOGNITION")
-    print("="*60)
-
-    # Initialize Camera
+    print("Initializing Camera...")
     cap = cv2.VideoCapture(0)
+    
+    print(f"Camera opened: {cap.isOpened()}")
     if not cap.isOpened():
-        print("Error: Could not open webcam.")
-        return
+        print("ERROR: Could not open camera!")
+        print("Trying camera index 1...")
+        cap = cv2.VideoCapture(1)
+        if not cap.isOpened():
+            print("ERROR: No camera found!")
+            return
 
-    # Initialize Hand Detector
-    try:
-        print("Initializing MediaPipe Hand Detector...")
-        detector = HandDetector(max_hands=1, detection_con=0.7)
-        smoother = TemporalSmoother(buffer_size=10)
-    except Exception as e:
-        print(f"\nError initializing MediaPipe: {e}")
-        print("\nCRITICAL: MediaPipe is required for this script.")
-        print("Please install it with: pip install mediapipe")
-        print("Note: MediaPipe may not support Python 3.13 yet. Try Python 3.10 or 3.11.")
-        return
-
-    # Initialize Text-to-Speech
-    try:
-        print("Initializing Text-to-Speech...")
-        engine = pyttsx3.init()
-    except Exception as e:
-        print(f"⚠ Warning: Could not initialize Text-to-Speech: {e}")
-        engine = None
-
-    # Load Model
+    detector = HandDetector(max_num_hands=1)
+    smoother = TemporalSmoother(buffer_size=5)
     model, labels = load_model_and_labels()
     
-    print("\nStarting camera feed...")
-    print("Controls:")
+    # Text-to-speech
+    engine = pyttsx3.init()
+    
+    # Preprocessing transforms
+    transform = transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+    
+    p_time = 0
+    current_sentence = ""
+    last_stable_sign = ""
+    stable_frame_count = 0
+    STABLE_THRESHOLD = 5
+    has_added_current = False
+    
+    print("\nControls:")
     print("  [SPACE] - Speak sentence")
     print("  [BACKSPACE] - Clear sentence")
     print("  [Q] - Quit")
-    
-    p_time = 0
-    
-    # Sentence construction variables
-    current_sentence = ""
-    last_stable_sign = None
-    stable_frame_count = 0
-    STABLE_THRESHOLD = 20  # Number of frames to hold sign before adding
-    has_added_current = False
+    print("\n*** Starting camera loop... ***\n")
     
     while True:
         success, img = cap.read()
         if not success:
-            print("Failed to read from webcam")
+            print("ERROR: Failed to read from camera!") 
             break
-
-        img_output = img.copy()
+            
+        img = cv2.flip(img, 1)
+        # Detect hands (using updated HandDetector API)
+        landmarks, bbox = detector.process(img)
+        if landmarks:
+            detector.draw_landmarks(img, landmarks)
+            lm_list = landmarks
+        else:
+            lm_list = None
         
-        # Detect Hand
-        img = detector.find_hands(img)
-        lm_list, bbox = detector.find_position(img, draw=False)
-
-        if bbox:
-            x, y, w, h = bbox[0], bbox[1], bbox[2], bbox[3]
+        if lm_list and model:
+            x, y, w, h = bbox
             
-            # Add padding for better crop
+            # Add padding
             offset = 20
-            y1, y2 = max(0, y - offset), min(img.shape[0], h + offset)
-            x1, x2 = max(0, x - offset), min(img.shape[1], w + offset)
+            h_img, w_img, _ = img.shape
             
-            # Draw bounding box on display image
-            cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 255), 2)
+            x1, y1 = max(x - offset, 0), max(y - offset, 0)
+            x2, y2 = min(x + w + offset, w_img), min(y + h + offset, h_img)
             
-            # Prediction (only if model exists)
-            if model is not None:
+            img_crop = img[y1:y2, x1:x2]
+            
+            if img_crop.size > 0:
                 try:
-                    # Crop hand
-                    img_crop = img_output[y1:y2, x1:x2]
+                    # Convert BGR to RGB
+                    img_rgb = cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB)
+                    pil_img = Image.fromarray(img_rgb)
                     
-                    if img_crop.size > 0:
-                        # Preprocess
-                        img_resize = cv2.resize(img_crop, (IMG_SIZE, IMG_SIZE))
-                        img_norm = img_resize / 255.0
-                        img_input = np.expand_dims(img_norm, axis=0)
+                    # Transform
+                    input_tensor = transform(pil_img).unsqueeze(0).to(device)
+                    
+                    # Inference
+                    with torch.no_grad():
+                        outputs = model(input_tensor)
+                        probabilities = torch.nn.functional.softmax(outputs, dim=1)
+                        confidence, predicted = torch.max(probabilities, 1)
                         
-                        # Predict
-                        prediction = model.predict(img_input, verbose=0)
-                        index = np.argmax(prediction)
-                        confidence = prediction[0][index]
+                        index = predicted.item()
+                        conf_val = confidence.item()
+                    
+                    # Smooth prediction
+                    smoother.add_prediction(index)
+                    smoothed_index = smoother.get_smoothed_prediction()
+                    
+                    label = labels.get(smoothed_index, labels.get(str(smoothed_index), "?"))
+                    
+                    # Sentence Construction Logic
+                    if label == last_stable_sign:
+                        stable_frame_count += 1
+                    else:
+                        stable_frame_count = 0
+                        last_stable_sign = label
+                        has_added_current = False
                         
-                        # Smooth prediction
-                        smoother.add_prediction(index)
-                        smoothed_index = smoother.get_smoothed_prediction()
+                    if stable_frame_count > STABLE_THRESHOLD and not has_added_current:
+                        current_sentence += label
+                        has_added_current = True
+                    
+                    # Display result
+                    if conf_val > 0.7:
+                        text = f"{label} ({conf_val*100:.0f}%)"
+                        color = (0, 255, 0) # Green
+                    else:
+                        text = f"{label}? ({conf_val*100:.0f}%)"
+                        color = (0, 255, 255) # Yellow
                         
-                        label = labels.get(smoothed_index, str(smoothed_index))
-                        
-                        # Sentence Construction Logic
-                        if label == last_stable_sign:
-                            stable_frame_count += 1
-                        else:
-                            stable_frame_count = 0
-                            last_stable_sign = label
-                            has_added_current = False
-                            
-                        if stable_frame_count > STABLE_THRESHOLD and not has_added_current:
-                            current_sentence += label
-                            has_added_current = True
-                        
-                        # Display result
-                        if confidence > 0.7:
-                            text = f"{label} ({confidence*100:.0f}%)"
-                            color = (0, 255, 0) # Green
-                        else:
-                            text = f"{label}? ({confidence*100:.0f}%)"
-                            color = (0, 255, 255) # Yellow
-                            
-                        # Draw label background
-                        (t_w, t_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
-                        cv2.rectangle(img, (x1, y1 - 35), (x1 + t_w, y1), color, cv2.FILLED)
-                        cv2.putText(img, text, (x1, y1 - 10), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-                                   
+                    # Draw label background
+                    (t_w, t_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
+                    cv2.rectangle(img, (x1, y1 - 35), (x1 + t_w, y1), color, cv2.FILLED)
+                    cv2.putText(img, text, (x1, y1 - 10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+                               
                 except Exception as e:
                     # Ignore prediction errors (e.g. empty crop)
+                    # print(f"Prediction error: {e}")
                     pass
-            else:
-                # Detection Only Mode
-                cv2.putText(img, "Hand Detected", (x1, y1 - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
+        elif bbox:
+             # Detection Only Mode
+            x, y, w, h = bbox
+            cv2.putText(img, "Hand Detected", (x, y - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
 
         # Display Sentence
         cv2.rectangle(img, (0, img.shape[0] - 60), (img.shape[1], img.shape[0]), (0, 0, 0), cv2.FILLED)
