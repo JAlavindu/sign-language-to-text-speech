@@ -1,11 +1,22 @@
 import cv2
 import mediapipe as mp
-# Explicitly import solutions to workaround potential import issues
-try:
-    import mediapipe.python.solutions
-except ImportError:
-    pass
 import numpy as np
+import os
+import time
+
+# Define connections manually in case solutions is missing
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (5, 9), (9, 10), (10, 11), (11, 12),
+    (9, 13), (13, 14), (14, 15), (15, 16),
+    (13, 17), (17, 18), (18, 19), (19, 20),
+    (0, 17)
+]
+
+class LandmarkListWrapper:
+    def __init__(self, landmarks):
+        self.landmark = landmarks
 
 class HandDetector:
     """
@@ -14,52 +25,88 @@ class HandDetector:
     def __init__(self, max_num_hands=1, min_detection_confidence=0.7, min_tracking_confidence=0.5):
         """
         Initialize the MediaPipe Hands model.
-        
-        Args:
-            max_num_hands (int): Maximum number of hands to detect.
-            min_detection_confidence (float): Minimum confidence value ([0.0, 1.0]) for detection.
-            min_tracking_confidence (float): Minimum confidence value ([0.0, 1.0]) for tracking.
         """
+        self.use_tasks = False
+        self.mp_hands = None
+        self.mp_draw = None
+        self.landmarker = None
+
         try:
+            # Try legacy solutions API
             self.mp_hands = mp.solutions.hands
             self.mp_draw = mp.solutions.drawing_utils
-        except AttributeError:
-            import mediapipe.python.solutions as solutions
-            self.mp_hands = solutions.hands
-            self.mp_draw = solutions.drawing_utils
+            self.hands = self.mp_hands.Hands(
+                static_image_mode=False,
+                max_num_hands=max_num_hands,
+                min_detection_confidence=min_detection_confidence,
+                min_tracking_confidence=min_tracking_confidence
+            )
+        except (AttributeError, ImportError):
+            print("Warning: mediapipe.solutions not found. Falling back to mediapipe.tasks.")
+            self.use_tasks = True
+            try:
+                from mediapipe.tasks import python
+                from mediapipe.tasks.python import vision
+                
+                # Resolving absolute path to the model file
+                model_path = os.path.join(os.getcwd(), 'ml-model', 'models', 'hand_landmarker.task')
+                # If running from ml-model folder, adjust
+                if not os.path.exists(model_path):
+                     model_path = os.path.join(os.getcwd(), 'models', 'hand_landmarker.task')
 
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=max_num_hands,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence
-        )
+                if not os.path.exists(model_path):
+                     raise FileNotFoundError(f"Model file not found at: {model_path}")
+
+                base_options = python.BaseOptions(model_asset_path=model_path)
+                options = vision.HandLandmarkerOptions(
+                    base_options=base_options,
+                    num_hands=max_num_hands,
+                    min_hand_detection_confidence=min_detection_confidence,
+                    min_hand_presence_confidence=min_detection_confidence,
+                    min_tracking_confidence=min_tracking_confidence,
+                    running_mode=vision.RunningMode.VIDEO 
+                )
+                self.landmarker = vision.HandLandmarker.create_from_options(options)
+                self.timestamp_ms = 0
+            except Exception as e:
+                print(f"Error initializing MediaPipe Tasks: {e}")
+                print("Please ensure 'models/hand_landmarker.task' exists.")
+                raise e
 
     def process(self, frame, padding=20):
         """
         Process a frame to detect hands.
-        
-        Args:
-            frame (np.array): Input image (BGR).
-            padding (int): Padding around the detected hand in pixels.
-            
-        Returns:
-            tuple: (landmarks, bbox)
-                - landmarks: MediaPipe landmarks object or None if no hand detected.
-                - bbox: Tuple (x, y, w, h) of the bounding box or None.
         """
         h, w, c = frame.shape
+        hand_landmarks = None
         
-        # Convert BGR to RGB for MediaPipe
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Process the frame
-        results = self.hands.process(rgb_frame)
-        
-        if results.multi_hand_landmarks:
-            # We only take the first hand detected since max_num_hands=1
-            hand_landmarks = results.multi_hand_landmarks[0]
+        if self.use_tasks:
+            # Task API
+            # Convert to mp.Image
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
             
+            # Update timestamp
+            self.timestamp_ms = int(time.time() * 1000)
+            
+            try:
+                result = self.landmarker.detect_for_video(mp_image, self.timestamp_ms)
+                
+                if result.hand_landmarks:
+                    # Wrap the first hand's landmarks
+                    raw_landmarks = result.hand_landmarks[0]
+                    hand_landmarks = LandmarkListWrapper(raw_landmarks)
+            except Exception as e:
+                pass
+                
+        else:
+            # Legacy API
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.hands.process(rgb_frame)
+            if results.multi_hand_landmarks:
+                hand_landmarks = results.multi_hand_landmarks[0]
+
+        if hand_landmarks:
             # Calculate bounding box
             x_min, y_min = w, h
             x_max, y_max = 0, 0
@@ -89,14 +136,6 @@ class HandDetector:
     def crop_hand(self, frame, bbox, target_size=(224, 224)):
         """
         Crop the hand from the frame and resize it.
-        
-        Args:
-            frame (np.array): Input image.
-            bbox (tuple): Bounding box (x, y, w, h).
-            target_size (tuple): Target size (width, height).
-            
-        Returns:
-            np.array: Cropped and resized hand image.
         """
         if bbox is None:
             return None
@@ -110,7 +149,7 @@ class HandDetector:
         # Crop
         hand_img = frame[y:y+h, x:x+w]
         
-        # Check if crop is empty (can happen if bbox is completely outside, though clamping prevents most)
+        # Check if crop is empty
         if hand_img.size == 0:
             return None
             
@@ -125,10 +164,28 @@ class HandDetector:
     def draw_landmarks(self, frame, landmarks):
         """
         Draw hand landmarks on the frame.
-        
-        Args:
-            frame (np.array): Input image.
-            landmarks: MediaPipe landmarks object.
         """
-        if landmarks:
+        if not landmarks:
+            return
+
+        h, w, c = frame.shape
+
+        if self.use_tasks or not self.mp_draw:
+            # Manual drawing
+            for connection in HAND_CONNECTIONS:
+                start_idx = connection[0]
+                end_idx = connection[1]
+                
+                lm1 = landmarks.landmark[start_idx]
+                lm2 = landmarks.landmark[end_idx]
+                
+                x1, y1 = int(lm1.x * w), int(lm1.y * h)
+                x2, y2 = int(lm2.x * w), int(lm2.y * h)
+                
+                cv2.line(frame, (x1, y1), (x2, y2), (255, 255, 255), 2)
+                
+            for lm in landmarks.landmark:
+                cx, cy = int(lm.x * w), int(lm.y * h)
+                cv2.circle(frame, (cx, cy), 4, (0, 0, 255), -1)
+        else:
             self.mp_draw.draw_landmarks(frame, landmarks, self.mp_hands.HAND_CONNECTIONS)

@@ -141,16 +141,25 @@ def main():
     print("\nControls:")
     print("  [SPACE] - Speak sentence")
     print("  [BACKSPACE] - Clear sentence")
+    print("  [F] - Toggle Camera Flip (View)")
+    print("  [M] - Toggle Model Input Mirror (Fix 'Left' vs 'Right' hand issues)")
+    print("  [R] - Toggle Crop Mode (Square/Rect)")
     print("  [Q] - Quit")
     print("\n*** Starting camera loop... ***\n")
     
+    flip_camera = False 
+    model_flip = False
+    use_square_crop = True
+
     while True:
         success, img = cap.read()
         if not success:
             print("ERROR: Failed to read from camera!") 
             break
             
-        img = cv2.flip(img, 1)
+        if flip_camera:
+            img = cv2.flip(img, 1)
+
         # Detect hands (using updated HandDetector API)
         landmarks, bbox = detector.process(img)
         if landmarks:
@@ -162,30 +171,47 @@ def main():
         if lm_list and model:
             x, y, w, h = bbox
             
-            # Smart Square Cropping (Preserve Aspect Ratio)
-            offset = 20
+            # --- Crop Logic ---
             h_img, w_img, _ = img.shape
             
-            # Calculate center
-            center_x, center_y = x + w // 2, y + h // 2
+            if use_square_crop:
+                # Smart Square Cropping (Preserve Aspect Ratio)
+                offset = 20
+                
+                # Calculate center
+                center_x, center_y = x + w // 2, y + h // 2
+                
+                # Make it square based on the largest dimension
+                max_dim = max(w, h) + (offset * 2)
+                half_dim = max_dim // 2
+                
+                x1 = max(center_x - half_dim, 0)
+                y1 = max(center_y - half_dim, 0)
+                x2 = min(center_x + half_dim, w_img)
+                y2 = min(center_y + half_dim, h_img)
+            else:
+                # Rectangular Crop (Squashed Aspect Ratio)
+                offset = 20
+                x1 = max(x - offset, 0)
+                y1 = max(y - offset, 0)
+                x2 = min(x + w + offset, w_img)
+                y2 = min(y + h + offset, h_img)
             
-            # Make it square based on the largest dimension
-            max_dim = max(w, h) + (offset * 2)
-            half_dim = max_dim // 2
-            
-            x1 = max(center_x - half_dim, 0)
-            y1 = max(center_y - half_dim, 0)
-            x2 = min(center_x + half_dim, w_img)
-            y2 = min(center_y + half_dim, h_img)
-            
-            # If the square goes out of bounds, we might get a rectangle again.
-            # But the Resize transform will handle slight deviations better than extreme ones.
             img_crop = img[y1:y2, x1:x2]
             
             if img_crop.size > 0:
                 try:
+                    # Apply Model Flip if requested
+                    if model_flip:
+                        img_crop_input = cv2.flip(img_crop, 1)
+                    else:
+                        img_crop_input = img_crop
+
+                    # Debug: Show what the model sees
+                    cv2.imshow("Model Input (Crop)", img_crop_input)
+
                     # Convert BGR to RGB
-                    img_rgb = cv2.cvtColor(img_crop, cv2.COLOR_BGR2RGB)
+                    img_rgb = cv2.cvtColor(img_crop_input, cv2.COLOR_BGR2RGB)
                     pil_img = Image.fromarray(img_rgb)
                     
                     # Transform
@@ -199,6 +225,10 @@ def main():
                         
                         index = predicted.item()
                         conf_val = confidence.item()
+
+                        # Debug: Print top 3 predictions
+                        top3_prob, top3_idx = torch.topk(probabilities, 3)
+                        print(f"Top 3: {[(labels.get(idx.item(), '?'), f'{prob.item():.2f}') for prob, idx in zip(top3_prob[0], top3_idx[0])]}")
                     
                     # Smooth prediction
                     smoother.add_prediction(index)
@@ -254,6 +284,10 @@ def main():
         
         cv2.putText(img, f"FPS: {int(fps)}", (10, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        
+        status_text = f"CamFlip: {'ON' if flip_camera else 'OFF'} | ModFlip: {'ON' if model_flip else 'OFF'} | Crop: {'Sqr' if use_square_crop else 'Rect'}"
+        cv2.putText(img, status_text, (10, 70), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
         # Show frame
         cv2.imshow("ASL Real-time Recognition", img)
@@ -261,6 +295,12 @@ def main():
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
+        elif key == ord('f'):
+            flip_camera = not flip_camera
+        elif key == ord('m'):
+            model_flip = not model_flip
+        elif key == ord('r'):
+            use_square_crop = not use_square_crop
         elif key == ord(' '): # Space to speak
             if engine and current_sentence:
                 engine.say(current_sentence)
