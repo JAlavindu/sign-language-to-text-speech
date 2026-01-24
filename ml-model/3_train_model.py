@@ -24,7 +24,8 @@ load_dotenv()
 
 # Configuration
 # Get paths from env or use defaults
-DATASET_PATH = os.getenv("PROCESSED_DATASET_PATH", r"E:\Lavindu\HCI\sign-language-to-text-speech\ml-model\datasets\processed")
+# CHANGED: Pointing to cropped dataset for better real-time performance
+DATASET_PATH = os.getenv("PROCESSED_DATASET_PATH", r"E:\Lavindu\HCI\sign-language-to-text-speech\ml-model\datasets\cropped")
 MODEL_SAVE_PATH = os.getenv("MODEL_SAVE_PATH", r"E:\Lavindu\HCI\sign-language-to-text-speech\ml-model\models")
 LOGS_PATH = os.getenv("LOGS_PATH", r"E:\Lavindu\HCI\sign-language-to-text-speech\ml-model\logs")
 
