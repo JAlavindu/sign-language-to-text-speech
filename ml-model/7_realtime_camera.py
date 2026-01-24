@@ -162,13 +162,24 @@ def main():
         if lm_list and model:
             x, y, w, h = bbox
             
-            # Add padding
+            # Smart Square Cropping (Preserve Aspect Ratio)
             offset = 20
             h_img, w_img, _ = img.shape
             
-            x1, y1 = max(x - offset, 0), max(y - offset, 0)
-            x2, y2 = min(x + w + offset, w_img), min(y + h + offset, h_img)
+            # Calculate center
+            center_x, center_y = x + w // 2, y + h // 2
             
+            # Make it square based on the largest dimension
+            max_dim = max(w, h) + (offset * 2)
+            half_dim = max_dim // 2
+            
+            x1 = max(center_x - half_dim, 0)
+            y1 = max(center_y - half_dim, 0)
+            x2 = min(center_x + half_dim, w_img)
+            y2 = min(center_y + half_dim, h_img)
+            
+            # If the square goes out of bounds, we might get a rectangle again.
+            # But the Resize transform will handle slight deviations better than extreme ones.
             img_crop = img[y1:y2, x1:x2]
             
             if img_crop.size > 0:
