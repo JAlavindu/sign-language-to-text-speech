@@ -27,6 +27,7 @@ class HandDetector:
         Initialize the MediaPipe Hands model.
         """
         self.use_tasks = False
+        self.handedness = "Unknown"
         self.mp_hands = None
         self.mp_draw = None
         self.landmarker = None
@@ -103,6 +104,11 @@ class HandDetector:
             # Legacy API
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = self.hands.process(rgb_frame)
+            
+            # Capture handedness
+            if results.multi_handedness:
+                self.handedness = results.multi_handedness[0].classification[0].label
+            
             if results.multi_hand_landmarks:
                 hand_landmarks = results.multi_hand_landmarks[0]
 

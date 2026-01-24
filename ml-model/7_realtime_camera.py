@@ -201,14 +201,26 @@ def main():
             
             if img_crop.size > 0:
                 try:
-                    # Apply Model Flip if requested
+                    # Input Preparation
+                    img_crop_input = img_crop
+                    flip_info = ""
+
+                    # Auto-Correction or Manual Flip
                     if model_flip:
                         img_crop_input = cv2.flip(img_crop, 1)
-                    else:
-                        img_crop_input = img_crop
+                        flip_info = "Manual Flip"
+                    elif hasattr(detector, 'handedness') and detector.handedness:
+                        # Adaptive: If Right Hand model, flip 'Left' hands (which MP calls 'Right')
+                        if detector.handedness == "Right":
+                            img_crop_input = cv2.flip(img_crop, 1)
+                            flip_info = "Auto Flip (L->R)"
+                        else:
+                            flip_info = "Right Hand"
 
                     # Debug: Show what the model sees
-                    cv2.imshow("Model Input (Crop)", img_crop_input)
+                    debug_img = img_crop_input.copy()
+                    cv2.putText(debug_img, flip_info, (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,0,255), 1)
+                    cv2.imshow("Model Input (Crop)", debug_img)
 
                     # Convert BGR to RGB
                     img_rgb = cv2.cvtColor(img_crop_input, cv2.COLOR_BGR2RGB)
