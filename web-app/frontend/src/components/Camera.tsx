@@ -32,7 +32,7 @@ export const Camera: React.FC<CameraProps> = ({
   }, [onCapture]);
 
   useEffect(() => {
-    let intervalId: NodeJS.Timeout;
+    let intervalId: ReturnType<typeof setInterval>;
     
     if (isCapturing) {
       // Initial capture immediately
