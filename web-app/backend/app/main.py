@@ -39,43 +39,64 @@ async def startup_event():
     global model, class_names
     print("Loading model and artifacts...")
     
-    # 1. Load Class Mapping
+    # 1. Load Weights (to determine correct number of classes)
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError(f"Model file not found at {MODEL_PATH}")
+    
+    state_dict = torch.load(MODEL_PATH, map_location=DEVICE)
+    # Check the output size of the final layer explicitly
+    # 'classifier.4.weight' corresponds to the last Linear layer in our MobileNetV2 head
+    if 'classifier.4.weight' in state_dict:
+        num_classes_model = state_dict['classifier.4.weight'].shape[0]
+        print(f"Detected {num_classes_model} classes in model weights.")
+    else:
+        # Fallback if layer name differs (unlikely given our loader)
+        num_classes_model = len(state_dict[list(state_dict.keys())[-1]]) 
+
+    print("Loading model and artifacts...")
+    
+    # 2. Load Class Mapping
     if not os.path.exists(MAPPING_PATH):
         raise FileNotFoundError(f"Mapping file not found at {MAPPING_PATH}")
     
     with open(MAPPING_PATH, 'r') as f:
         mapping_data = json.load(f)
-        # Assuming mapping is like {"idx_to_class": {"0": "A", "1": "B"}} 
-        # or a direct list depending on how you saved it. 
-        # Based on typical PyTorch ImageFolder, we usually need the list of names.
-        # Let's assume idx_to_class exists, otherwise we invert class_to_idx
         if 'idx_to_class' in mapping_data:
             idx_map = mapping_data['idx_to_class']
-            # Ensure keys are sorted integers to get correct list order
-            class_names = [idx_map[str(i)] for i in range(len(idx_map))]
+            raw_class_names = [idx_map[str(i)] for i in range(len(idx_map))]
         elif 'class_to_idx' in mapping_data:
-             # Invert the dictionary
              inv_map = {v: k for k, v in mapping_data['class_to_idx'].items()}
-             class_names = [inv_map[i] for i in range(len(inv_map))]
+             raw_class_names = [inv_map[i] for i in range(len(inv_map))]
         else:
-             # Fallback if just a raw list or dict
-             print("Warning: unexpected JSON format, checking keys...")
-             class_names = list(mapping_data.keys()) # simplistic fallback
+             raw_class_names = list(mapping_data.keys())
 
-    num_classes = len(class_names)
-    print(f"Loaded {num_classes} classes.")
+    # 3. reconcile classes
+    if len(raw_class_names) == num_classes_model:
+        class_names = raw_class_names
+    else:
+        print(f"Warning: Mapping has {len(raw_class_names)} classes but model has {num_classes_model}.")
+        print("Attempting to filter class names to match model...")
+        
+        # Heuristic: The model (36) is likely generic (0-9, A-Z). 
+        # The mapping (40) likely has extras like 'DEL', 'SPACE', 'NOTHING'.
+        # We filter for single-character alphanumeric classes.
+        filtered_names = [c for c in raw_class_names if len(c) == 1 and c.isalnum()]
+        filtered_names.sort() # Ensure strictly 0-9 then A-Z order which is standard for ImageFolder
+        
+        if len(filtered_names) == num_classes_model:
+            print("Successfully filtered to standard alphanumeric classes (0-9, A-Z).")
+            class_names = filtered_names
+        else:
+            print("Filter failed. Truncating list as fallback (Predictions may be wrong!).")
+            class_names = raw_class_names[:num_classes_model]
 
-    # 2. Load Model Architecture
-    model = load_model_architecture(num_classes)
-    
-    # 3. Load Weights
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"Model file not found at {MODEL_PATH}")
-    
-    state_dict = torch.load(MODEL_PATH, map_location=DEVICE)
+    print(f"Final Class List: {class_names}")
+
+    # 4. Load Model Architecture & Weights
+    model = load_model_architecture(num_classes_model)
     model.load_state_dict(state_dict)
     model.to(DEVICE)
-    model.eval() # Set to evaluation mode (disable dropout, etc)
+    model.eval()
     print("Model loaded successfully!")
 
 
