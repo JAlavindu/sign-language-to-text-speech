@@ -24,8 +24,8 @@ load_dotenv()
 
 # Configuration
 # Get paths from env or use defaults
-# CHANGED: Pointing to cropped dataset for better real-time performance
-DATASET_PATH = os.getenv("PROCESSED_DATASET_PATH", r"E:\Lavindu\HCI\sign-language-to-text-speech\ml-model\datasets\cropped")
+# CHANGED: Using processed dataset directly to include new data without waiting for cropping
+DATASET_PATH = os.getenv("PROCESSED_DATASET_PATH", r"E:\Lavindu\HCI\sign-language-to-text-speech\ml-model\datasets\processed")
 MODEL_SAVE_PATH = os.getenv("MODEL_SAVE_PATH", r"E:\Lavindu\HCI\sign-language-to-text-speech\ml-model\models")
 LOGS_PATH = os.getenv("LOGS_PATH", r"E:\Lavindu\HCI\sign-language-to-text-speech\ml-model\logs")
 
@@ -91,7 +91,7 @@ def create_dataloaders():
                       for x in ['train', 'validation', 'test']}
     
     dataloaders = {x: torch.utils.data.DataLoader(image_datasets[x], batch_size=BATCH_SIZE,
-                                                 shuffle=(x == 'train'), num_workers=4)
+                                                 shuffle=(x == 'train'), num_workers=0)
                    for x in ['train', 'validation', 'test']}
     
     dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'validation', 'test']}
@@ -225,6 +225,13 @@ def main():
     
     # Build Model (MobileNetV2)
     print(f"\nBuilding MobileNetV2 Model...")
+    
+    if device.type == 'cuda':
+        print(f"GPU Name: {torch.cuda.get_device_name(0)}")
+        print(f"Memory Usage:")
+        print(f"Allocated: {torch.cuda.memory_allocated(0)/1024**3:.1f} GB")
+        print(f"Cached:    {torch.cuda.memory_reserved(0)/1024**3:.1f} GB")
+        
     model_ft = models.mobilenet_v2(weights='DEFAULT')
     
     # Freeze parameters so we don't backprop through them

@@ -64,3 +64,11 @@ celerybeat-schedule
 
 # VS Code
 .vscode/
+
+# ML Data & Models
+ml-model/datasets/
+ml-model/models/
+ml-model/logs/
+*.pth
+*.task
+web-app/backend/artifacts/*.pth

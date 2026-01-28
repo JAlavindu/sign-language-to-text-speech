@@ -20,6 +20,8 @@ load_dotenv()
 # Configuration
 SIGNALAPHASET_PATH = os.getenv("SIGNALAPHASET_PATH", r"E:\Lavindu\HCI\SignAlphaSet")
 ASL_DATASET_PATH = os.getenv("ASL_DATASET_PATH", r"E:\Lavindu\HCI\asl_dataset")
+ASL_ALPHABET_TRAIN_PATH = os.getenv("ASL_ALPHABET_TRAIN_PATH", r"E:\Lavindu\HCI\asl_alphabet_train")
+NUMBERS_PATH = os.getenv("NUMBERS_PATH", r"E:\Lavindu\HCI\numbers")
 OUTPUT_PATH = os.getenv("PROCESSED_DATASET_PATH", r"E:\Lavindu\HCI\sign-language-to-text-speech\ml-model\datasets\processed")
 
 # If paths are relative, make them absolute based on project root
@@ -34,6 +36,21 @@ TEST_RATIO = 0.15
 # Random seed for reproducibility
 RANDOM_SEED = 42
 np.random.seed(RANDOM_SEED)
+
+def normalize_class_name(class_name):
+    """Normalize and remap class names"""
+    name = class_name.upper()
+    
+    # Remap common variations to ensure consistency
+    mapping = {
+        'BLANK': 'NOTHING',
+        'SPACE': 'SPACE', 
+        'DEL': 'DEL',
+        'DELETE': 'DEL',
+        'NOTHING': 'NOTHING'
+    }
+    
+    return mapping.get(name, name)
 
 def get_all_images(dataset_path, class_folders):
     """Get all image paths organized by class"""
@@ -51,8 +68,8 @@ def get_all_images(dataset_path, class_folders):
             images.extend(glob.glob(os.path.join(class_path, ext)))
         
         for img_path in images:
-            # Normalize class name (uppercase)
-            normalized_class = class_name.upper()
+            # Normalize class name (uppercase and remapped)
+            normalized_class = normalize_class_name(class_name)
             data.append({
                 'path': img_path,
                 'class': normalized_class,
@@ -203,6 +220,28 @@ def main():
     all_data = []
     
     # Process SignAlphaSet (A-Z)
+
+    # Process asl_alphabet_train (A-Z, del, nothing, space)
+    if os.path.exists(ASL_ALPHABET_TRAIN_PATH):
+        print(f"\nProcessing asl_alphabet_train...")
+        # Get all subdirectories as classes
+        asl_train_folders = [d for d in os.listdir(ASL_ALPHABET_TRAIN_PATH) 
+                            if os.path.isdir(os.path.join(ASL_ALPHABET_TRAIN_PATH, d))]
+        asl_train_data = get_all_images(ASL_ALPHABET_TRAIN_PATH, asl_train_folders)
+        all_data.extend(asl_train_data)
+        print(f"✓ Found {len(asl_train_data)} images from asl_alphabet_train")
+
+    # Process numbers (Test_Nums, Train_Nums)
+    if os.path.exists(NUMBERS_PATH):
+        print(f"\nProcessing Numbers...")
+        for subdir in ['Train_Nums', 'Test_Nums']:
+            nums_path = os.path.join(NUMBERS_PATH, subdir)
+            if os.path.exists(nums_path):
+                num_folders = [d for d in os.listdir(nums_path) 
+                              if os.path.isdir(os.path.join(nums_path, d))]
+                nums_data = get_all_images(nums_path, num_folders)
+                all_data.extend(nums_data)
+                print(f"✓ Found {len(nums_data)} images from numbers/{subdir}")
     if os.path.exists(SIGNALAPHASET_PATH):
         print(f"\nProcessing SignAlphaSet...")
         alpha_folders = [chr(i) for i in range(ord('A'), ord('Z')+1)]
