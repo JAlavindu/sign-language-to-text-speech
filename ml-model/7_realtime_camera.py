@@ -257,7 +257,14 @@ def main():
                         has_added_current = False
                         
                     if stable_frame_count > STABLE_THRESHOLD and not has_added_current:
-                        current_sentence += label
+                        if label == "SPACE":
+                            current_sentence += " "
+                        elif label == "DEL":
+                            current_sentence = current_sentence[:-1]
+                        elif label == "NOTHING":
+                            pass
+                        else:
+                            current_sentence += label
                         has_added_current = True
                     
                     # Display result
