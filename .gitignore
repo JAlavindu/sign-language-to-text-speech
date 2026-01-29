@@ -68,7 +68,12 @@ celerybeat-schedule
 # ML Data & Models
 ml-model/datasets/
 ml-model/models/
+!ml-model/models/asl_model_final.pth
+!ml-model/models/hand_landmarker.task
+!ml-model/models/class_mapping.json
 ml-model/logs/
 *.pth
+!ml-model/models/asl_model_final.pth
 *.task
+!ml-model/models/hand_landmarker.task
 web-app/backend/artifacts/*.pth

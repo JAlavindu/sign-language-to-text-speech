@@ -30,7 +30,7 @@ except ImportError:
 
 # Configuration
 MODEL_PATH = os.path.join(current_dir, "models", "asl_model_final.pth")
-CLASS_MAPPING_PATH = os.path.join(current_dir, "datasets", "processed", "class_mapping.json")
+CLASS_MAPPING_PATH = os.path.join(current_dir, "models", "class_mapping.json")
 IMG_SIZE = 224
 
 # Device config
