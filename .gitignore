@@ -77,3 +77,4 @@ ml-model/logs/
 *.task
 !ml-model/models/hand_landmarker.task
 web-app/backend/artifacts/*.pth
+!web-app/backend/artifacts/asl_model_final.pth
