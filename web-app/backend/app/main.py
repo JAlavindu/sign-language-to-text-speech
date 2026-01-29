@@ -17,6 +17,10 @@ MODEL_PATH = os.path.join(ARTIFACTS_DIR, "asl_model_final.pth")
 MAPPING_PATH = os.path.join(ARTIFACTS_DIR, "class_mapping.json")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# --- Optimized Transform ---
+# Initialize transform once to avoid overhead per request
+TRANSFORM = get_transform()
+
 app = FastAPI(title="ASL Recognition API")
 
 # --- CORS Middleware ---
@@ -118,8 +122,7 @@ async def predict(file: UploadFile = File(...)):
         image = Image.open(io.BytesIO(image_data)).convert('RGB')
         
         # Preprocess
-        transform = get_transform()
-        input_tensor = transform(image).unsqueeze(0) # Add batch dimension (1, 3, 224, 224)
+        input_tensor = TRANSFORM(image).unsqueeze(0) # Add batch dimension (1, 3, 224, 224)
         input_tensor = input_tensor.to(DEVICE)
         
         # Inference
