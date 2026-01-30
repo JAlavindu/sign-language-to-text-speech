@@ -17,7 +17,49 @@ Unlike traditional systems that rely solely on cameras _or_ gloves, this project
 1.  **The Eyes (Camera)**: Uses Computer Vision (MediaPipe + CNN) to recognize hand shapes visually.
 2.  **The Feel (Glove)**: Uses Flex Sensors and IMUs to capture finger bending and hand motion.
 3.  **The Voice (TTS)**: Converts recognized gestures into spoken words using Text-to-Speech.
+---
 
+## 🌐 Web Application (New!)
+
+We now have a modern Web Application to run the system directly in your browser!
+
+### 🏗️ Tech Stack
+- **Backend**: FastAPI (Python), PyTorch, MobileNetV2
+- **Frontend**: React (TypeScript), Tailwind CSS, Vite
+
+### 🚀 How to Run the Web App
+
+#### 1. Start the Backend Server
+This runs the AI Inference API.
+
+```powershell
+cd web-app/backend
+# Install dependencies (if not already done)
+pip install -r requirements.txt
+# Run the server
+uvicorn app.main:app --reload
+```
+*Server will start at: `http://localhost:8000`*
+
+#### 2. Start the Frontend Application
+This runs the React User Interface.
+
+```powershell
+cd web-app/frontend
+# Install dependencies
+npm install 
+# Run the development server
+npm run dev
+```
+*App will open at: `http://localhost:5173`*
+
+**Key Features:**
+- 📷 Real-time webcam sign detection.
+- 💬 Live sentence construction.
+- 🔊 Text-to-Speech (Click "Speak").
+- 🌙 Dark Mode & Modern UI.
+
+---
 ## 🛠️ Prerequisites
 
 ### Hardware
