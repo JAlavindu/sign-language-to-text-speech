@@ -293,7 +293,20 @@ def main():
 
         # Display Sentence
         cv2.rectangle(img, (0, img.shape[0] - 60), (img.shape[1], img.shape[0]), (0, 0, 0), cv2.FILLED)
-        cv2.putText(img, f"Sentence: {current_sentence}", (20, img.shape[0] - 20), 
+        
+        # Dynamic text scrolling
+        display_text = f"Sentence: {current_sentence}"
+        (text_w, _), _ = cv2.getTextSize(display_text, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
+        max_image_width = img.shape[1] - 40
+        
+        if text_w > max_image_width:
+            # Estimate average character width and truncate from the start
+            avg_char_w = text_w / len(display_text)
+            chars_to_fit = int(max_image_width / avg_char_w)
+            # Show ellipses + the end of the sentence
+            display_text = "..." + current_sentence[-(chars_to_fit-15):] 
+            
+        cv2.putText(img, display_text, (20, img.shape[0] - 20), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
         # Calculate and show FPS
