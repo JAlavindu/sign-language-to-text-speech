@@ -118,10 +118,22 @@ def main():
             print("ERROR: No camera found!")
             return
 
-    detector = HandDetector(max_num_hands=1)
+    # Increase confidence to reduce false positives (e.g. faces/background)
+    detector = HandDetector(max_num_hands=1, min_detection_confidence=0.8)
     smoother = TemporalSmoother(buffer_size=5)
     model, labels = load_model_and_labels()
     
+    # Find "NOTHING" index or create a virtual one for low confidence
+    nothing_index = -1
+    for idx, label in labels.items():
+        if isinstance(label, str) and label.upper() == "NOTHING":
+            nothing_index = idx
+            break
+    
+    if nothing_index == -1:
+        nothing_index = 9999
+        labels[nothing_index] = "..."
+
     # Text-to-speech (initialized in thread to avoid blocking)
     # engine = pyttsx3.init()
     
@@ -239,6 +251,11 @@ def main():
                         index = predicted.item()
                         conf_val = confidence.item()
 
+                        # Filter weak predictions (Random Gestures / Noise)
+                        # If confidence is low, force "NOTHING" or "..."
+                        if conf_val < 0.8: 
+                            index = nothing_index
+
                         # Debug: Print top 3 predictions
                         top3_prob, top3_idx = torch.topk(probabilities, 3)
                         print(f"Top 3: {[(labels.get(idx.item(), '?'), f'{prob.item():.2f}') for prob, idx in zip(top3_prob[0], top3_idx[0])]}")
@@ -262,7 +279,7 @@ def main():
                             current_sentence += " "
                         elif label == "DEL":
                             current_sentence = current_sentence[:-1]
-                        elif label == "NOTHING":
+                        elif label == "NOTHING" or label == "...":
                             pass
                         else:
                             current_sentence += label
