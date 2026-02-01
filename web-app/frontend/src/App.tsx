@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Camera } from "./components/Camera";
 import { Prediction } from "./components/Prediction";
@@ -11,6 +12,7 @@ function App() {
   const lastSignRef = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isBackendReady, setIsBackendReady] = useState(false);
+  const isProcessingRef = useRef(false);
 
   // Check backend health on mount
   useEffect(() => {
@@ -18,6 +20,10 @@ function App() {
   }, []);
 
   const handleCapture = useCallback(async (imageSrc: string) => {
+    // Prevent request overlapping to reduce latency
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
+
     try {
       setError(null);
       const result = await predictSign(imageSrc);
@@ -26,8 +32,6 @@ function App() {
       if (result.confidence < 0.8) {
         setPrediction(null);
         setConfidence(result.confidence);
-        // Optional: Reset debouncer if confidence drops (assume hand moved/dropped)
-        // lastSignRef.current = null;
         return;
       }
 
@@ -59,6 +63,8 @@ function App() {
       }
     } catch (err) {
       setError("Failed to get prediction");
+    } finally {
+      isProcessingRef.current = false;
     }
   }, []);
 
@@ -78,7 +84,7 @@ function App() {
       const utterance = new SpeechSynthesisUtterance(sentence);
       // Optional: Select a specific voice if needed, or leave default
       // const voices = window.speechSynthesis.getVoices();
-      // utterance.voice = voices[0]; 
+      // utterance.voice = voices[0];
       window.speechSynthesis.speak(utterance);
     }
   }, [sentence]);

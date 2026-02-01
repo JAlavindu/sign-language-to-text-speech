@@ -10,6 +10,7 @@ import time
 import json
 import sys
 import pyttsx3
+import threading
 from PIL import Image
 
 import torch
@@ -121,8 +122,8 @@ def main():
     smoother = TemporalSmoother(buffer_size=5)
     model, labels = load_model_and_labels()
     
-    # Text-to-speech
-    engine = pyttsx3.init()
+    # Text-to-speech (initialized in thread to avoid blocking)
+    # engine = pyttsx3.init()
     
     # Preprocessing transforms
     transform = transforms.Compose([
@@ -334,9 +335,17 @@ def main():
         elif key == ord('r'):
             use_square_crop = not use_square_crop
         elif key == ord(' '): # Space to speak
-            if engine and current_sentence:
-                engine.say(current_sentence)
-                engine.runAndWait()
+            if current_sentence:
+                def speak_thread(text):
+                    try:
+                        tts = pyttsx3.init()
+                        tts.setProperty('rate', 150)
+                        tts.say(text)
+                        tts.runAndWait()
+                    except Exception as e:
+                        print(f"Error speaking: {e}")
+                
+                threading.Thread(target=speak_thread, args=(current_sentence,), daemon=True).start()
         elif key == 8: # Backspace to clear
             current_sentence = ""
 
