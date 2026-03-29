@@ -10,6 +10,7 @@ import time
 import json
 import sys
 import pyttsx3
+import threading
 from PIL import Image
 
 import torch
@@ -30,7 +31,7 @@ except ImportError:
 
 # Configuration
 MODEL_PATH = os.path.join(current_dir, "models", "asl_model_final.pth")
-CLASS_MAPPING_PATH = os.path.join(current_dir, "datasets", "processed", "class_mapping.json")
+CLASS_MAPPING_PATH = os.path.join(current_dir, "models", "class_mapping.json")
 IMG_SIZE = 224
 
 # Device config
@@ -117,12 +118,24 @@ def main():
             print("ERROR: No camera found!")
             return
 
-    detector = HandDetector(max_num_hands=1)
+    # Increase confidence to reduce false positives (e.g. faces/background)
+    detector = HandDetector(max_num_hands=1, min_detection_confidence=0.8)
     smoother = TemporalSmoother(buffer_size=5)
     model, labels = load_model_and_labels()
     
-    # Text-to-speech
-    engine = pyttsx3.init()
+    # Find "NOTHING" index or create a virtual one for low confidence
+    nothing_index = -1
+    for idx, label in labels.items():
+        if isinstance(label, str) and label.upper() == "NOTHING":
+            nothing_index = idx
+            break
+    
+    if nothing_index == -1:
+        nothing_index = 9999
+        labels[nothing_index] = "..."
+
+    # Text-to-speech (initialized in thread to avoid blocking)
+    # engine = pyttsx3.init()
     
     # Preprocessing transforms
     transform = transforms.Compose([
@@ -238,6 +251,11 @@ def main():
                         index = predicted.item()
                         conf_val = confidence.item()
 
+                        # Filter weak predictions (Random Gestures / Noise)
+                        # If confidence is low, force "NOTHING" or "..."
+                        if conf_val < 0.8: 
+                            index = nothing_index
+
                         # Debug: Print top 3 predictions
                         top3_prob, top3_idx = torch.topk(probabilities, 3)
                         print(f"Top 3: {[(labels.get(idx.item(), '?'), f'{prob.item():.2f}') for prob, idx in zip(top3_prob[0], top3_idx[0])]}")
@@ -257,7 +275,14 @@ def main():
                         has_added_current = False
                         
                     if stable_frame_count > STABLE_THRESHOLD and not has_added_current:
-                        current_sentence += label
+                        if label == "SPACE":
+                            current_sentence += " "
+                        elif label == "DEL":
+                            current_sentence = current_sentence[:-1]
+                        elif label == "NOTHING" or label == "...":
+                            pass
+                        else:
+                            current_sentence += label
                         has_added_current = True
                     
                     # Display result
@@ -286,7 +311,20 @@ def main():
 
         # Display Sentence
         cv2.rectangle(img, (0, img.shape[0] - 60), (img.shape[1], img.shape[0]), (0, 0, 0), cv2.FILLED)
-        cv2.putText(img, f"Sentence: {current_sentence}", (20, img.shape[0] - 20), 
+        
+        # Dynamic text scrolling
+        display_text = f"Sentence: {current_sentence}"
+        (text_w, _), _ = cv2.getTextSize(display_text, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
+        max_image_width = img.shape[1] - 40
+        
+        if text_w > max_image_width:
+            # Estimate average character width and truncate from the start
+            avg_char_w = text_w / len(display_text)
+            chars_to_fit = int(max_image_width / avg_char_w)
+            # Show ellipses + the end of the sentence
+            display_text = "..." + current_sentence[-(chars_to_fit-15):] 
+            
+        cv2.putText(img, display_text, (20, img.shape[0] - 20), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
         # Calculate and show FPS
@@ -314,9 +352,17 @@ def main():
         elif key == ord('r'):
             use_square_crop = not use_square_crop
         elif key == ord(' '): # Space to speak
-            if engine and current_sentence:
-                engine.say(current_sentence)
-                engine.runAndWait()
+            if current_sentence:
+                def speak_thread(text):
+                    try:
+                        tts = pyttsx3.init()
+                        tts.setProperty('rate', 150)
+                        tts.say(text)
+                        tts.runAndWait()
+                    except Exception as e:
+                        print(f"Error speaking: {e}")
+                
+                threading.Thread(target=speak_thread, args=(current_sentence,), daemon=True).start()
         elif key == 8: # Backspace to clear
             current_sentence = ""
 

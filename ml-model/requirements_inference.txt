@@ -1,0 +1,7 @@
+numpy
+opencv-python
+mediapipe
+pillow
+torch
+torchvision
+pyttsx3
