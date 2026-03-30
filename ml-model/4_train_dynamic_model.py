@@ -7,9 +7,24 @@ from sklearn.preprocessing import LabelEncoder
 
 # Configuration
 KEYPOINTS_DIR = os.path.join("datasets", "processed_keypoints")
-MAX_FRAMES = 50       # Standardize all clips to 50 frames
-INPUT_FEATURES = 1662 # 132(Pose) + 1404(Face) + 63(LH) + 63(RH)
-HIDDEN_SIZE = 128
+MAX_FRAMES = 50
+
+# --- Feature Mapping Constants (Based on extraction script) ---
+# Pose: 33*4 = 132
+# Face: 468*3 = 1404
+# LHand: 21*3 = 63
+# RHand: 21*3 = 63
+POSE_START, POSE_END = 0, 132
+FACE_START, FACE_END = 132, 1536
+HANDS_START, HANDS_END = 1536, 1662
+
+# Feature counts for the split streams
+PHYSICAL_FEATURES = (POSE_END - POSE_START) + (HANDS_END - HANDS_START) # 132 + 126 = 258
+FACE_FEATURES = FACE_END - FACE_START # 1404
+
+# Hyperparameters
+PHYSICAL_HIDDEN_SIZE = 128
+FACE_HIDDEN_SIZE = 64
 NUM_LAYERS = 2
 BATCH_SIZE = 16
 EPOCHS = 30
@@ -21,8 +36,6 @@ class DynamicGestureDataset(Dataset):
         self.samples = []
         self.labels = []
         
-        # Assumption: You organize .npy files in subfolders by class name
-        # Example: processed_keypoints/hello/video1.npy
         for class_name in os.listdir(data_dir):
             class_dir = os.path.join(data_dir, class_name)
             if not os.path.isdir(class_dir):
@@ -33,7 +46,6 @@ class DynamicGestureDataset(Dataset):
                     self.samples.append(os.path.join(class_dir, file))
                     self.labels.append(class_name)
                     
-        # Encode string labels to integers
         self.label_encoder = LabelEncoder()
         self.encoded_labels = self.label_encoder.fit_transform(self.labels)
         self.num_classes = len(self.label_encoder.classes_)
@@ -42,56 +54,87 @@ class DynamicGestureDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        # Load the keypoints array (Shape: [Frames, 1662])
         npy_path = self.samples[idx]
         data = np.load(npy_path)
         
-        # PADDING / TRUNCATING
         frame_count = data.shape[0]
+        # PADDING / TRUNCATING to 50 frames
         if frame_count < self.max_frames:
-            # Pad with zeros if the video is too short
-            padding = np.zeros((self.max_frames - frame_count, INPUT_FEATURES))
+            padding = np.zeros((self.max_frames - frame_count, 1662))
             data = np.vstack((data, padding))
         else:
-            # Truncate if the video is too long
             data = data[:self.max_frames, :]
             
+        # --- SPLIT THE DATA FOR THE DUAL STREAMS ---
+        pose_data = data[:, POSE_START:POSE_END]
+        face_data = data[:, FACE_START:FACE_END]
+        hands_data = data[:, HANDS_START:HANDS_END]
+        
+        # Combine Pose and Hands into one "Physical/Motion" stream
+        physical_stream = np.concatenate([pose_data, hands_data], axis=1)
+        
         label = self.encoded_labels[idx]
         
-        # Returns Tensor, wait...
-        return torch.FloatTensor(data), torch.tensor(label, dtype=torch.long)
+        return torch.FloatTensor(physical_stream), torch.FloatTensor(face_data), torch.tensor(label, dtype=torch.long)
 
-class GestureLSTM(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes):
-        super(GestureLSTM, self).__init__()
-        # LSTM Layer
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=0.2)
-        # Fully connected layer for classification
-        self.fc = nn.Linear(hidden_size, num_classes)
+class DualStreamASLModel(nn.Module):
+    def __init__(self, physical_input_size, face_input_size, physical_hidden, face_hidden, num_layers, num_classes):
+        super(DualStreamASLModel, self).__init__()
+        
+        # Stream 1: Physical Motion (Body + Hands)
+        self.physical_lstm = nn.LSTM(physical_input_size, physical_hidden, num_layers, batch_first=True, dropout=0.2)
+        
+        # Stream 2: Facial Expressions (Emotions/Grammar)
+        self.face_lstm = nn.LSTM(face_input_size, face_hidden, num_layers, batch_first=True, dropout=0.2)
+        
+        # Fusion Layer
+        # Concatenate the final hidden state of both LSTMs
+        combined_hidden = physical_hidden + face_hidden
+        
+        self.fc1 = nn.Linear(combined_hidden, 128)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.3)
+        self.fc2 = nn.Linear(128, num_classes)
 
-    def forward(self, x):
-        # x shape: (batch_size, seq_length, 1662)
-        out, (h_n, c_n) = self.lstm(x)
+    def forward(self, physical_x, face_x):
+        # Stream 1 Forward
+        phys_out, _ = self.physical_lstm(physical_x)
+        phys_last = phys_out[:, -1, :] # Get last frame's output
         
-        # We only care about the output of the LSTM at the final time step
-        # out[:, -1, :] gets the last frame's output for the whole batch
-        last_out = out[:, -1, :] 
+        # Stream 2 Forward
+        face_out, _ = self.face_lstm(face_x)
+        face_last = face_out[:, -1, :] # Get last frame's output
         
-        # Classify
-        return self.fc(last_out)
+        # Fusion
+        combined = torch.cat((phys_last, face_last), dim=1)
+        
+        # Classification
+        out = self.fc1(combined)
+        out = self.relu(out)
+        out = self.dropout(out)
+        out = self.fc2(out)
+        
+        return out
 
 def train_model():
     print("Preparing dataset...")
     dataset = DynamicGestureDataset(KEYPOINTS_DIR)
     
     if len(dataset) == 0:
-        print(f"No .npy files found in {KEYPOINTS_DIR}. Make sure they are inside class subfolders!")
+        print(f"No .npy files found in {KEYPOINTS_DIR}. Download WLASL data and extract keypoints first!")
         return
         
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = GestureLSTM(INPUT_FEATURES, HIDDEN_SIZE, NUM_LAYERS, dataset.num_classes).to(device)
+    model = DualStreamASLModel(
+        physical_input_size=PHYSICAL_FEATURES, 
+        face_input_size=FACE_FEATURES, 
+        physical_hidden=PHYSICAL_HIDDEN_SIZE, 
+        face_hidden=FACE_HIDDEN_SIZE, 
+        num_layers=NUM_LAYERS, 
+        num_classes=dataset.num_classes
+    ).to(device)
     
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
@@ -104,11 +147,13 @@ def train_model():
         total = 0
         
         model.train()
-        for batch_data, batch_labels in dataloader:
-            batch_data, batch_labels = batch_data.to(device), batch_labels.to(device)
+        for phys_data, face_data, batch_labels in dataloader:
+            phys_data = phys_data.to(device)
+            face_data = face_data.to(device)
+            batch_labels = batch_labels.to(device)
             
-            # Forward pass
-            outputs = model(batch_data)
+            # Forward pass (now takes two inputs)
+            outputs = model(phys_data, face_data)
             loss = criterion(outputs, batch_labels)
             
             # Backward pass
@@ -125,8 +170,8 @@ def train_model():
 
     # Save the model
     os.makedirs('models', exist_ok=True)
-    torch.save(model.state_dict(), 'models/dynamic_gesture_model.pth')
-    print("Model saved to models/dynamic_gesture_model.pth")
+    torch.save(model.state_dict(), 'models/dual_stream_gesture_model.pth')
+    print("Model saved to models/dual_stream_gesture_model.pth")
 
 if __name__ == '__main__':
     train_model()
