@@ -6,7 +6,7 @@ import torch.nn as nn
 from collections import deque
 import importlib
 
-# Dynamic import for our NLP module (since the file starts with a number)
+# Dynamic import for our NLP module
 nlp_module = importlib.import_module("6_nlp_translation")
 ASLTranslator = nlp_module.ASLTranslator
 
@@ -15,22 +15,51 @@ mp_holistic = mp.solutions.holistic
 
 # --- Config ---
 MAX_FRAMES = 50
-INPUT_FEATURES = 1662
-HIDDEN_SIZE = 128
+
+# Feature Mapping Constants
+POSE_START, POSE_END = 0, 132
+FACE_START, FACE_END = 132, 1536
+HANDS_START, HANDS_END = 1536, 1662
+
+PHYSICAL_FEATURES = (POSE_END - POSE_START) + (HANDS_END - HANDS_START) # 258
+FACE_FEATURES = FACE_END - FACE_START # 1404
+
+PHYSICAL_HIDDEN_SIZE = 128
+FACE_HIDDEN_SIZE = 64
 NUM_LAYERS = 2
+
 # Update this with the classes you actually trained on
 CLASSES = ['hello', 'please', 'thank_you']  
 
-# --- LSTM Model Definition ---
-class GestureLSTM(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes):
-        super(GestureLSTM, self).__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=0.2)
-        self.fc = nn.Linear(hidden_size, num_classes)
+# --- Updated Dual-Stream Model Definition ---
+class DualStreamASLModel(nn.Module):
+    def __init__(self, physical_input_size, face_input_size, physical_hidden, face_hidden, num_layers, num_classes):
+        super(DualStreamASLModel, self).__init__()
+        
+        self.physical_lstm = nn.LSTM(physical_input_size, physical_hidden, num_layers, batch_first=True, dropout=0.2)
+        self.face_lstm = nn.LSTM(face_input_size, face_hidden, num_layers, batch_first=True, dropout=0.2)
+        
+        combined_hidden = physical_hidden + face_hidden
+        self.fc1 = nn.Linear(combined_hidden, 128)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.3)
+        self.fc2 = nn.Linear(128, num_classes)
 
-    def forward(self, x):
-        out, _ = self.lstm(x)
-        return self.fc(out[:, -1, :])
+    def forward(self, physical_x, face_x):
+        phys_out, _ = self.physical_lstm(physical_x)
+        phys_last = phys_out[:, -1, :] 
+        
+        face_out, _ = self.face_lstm(face_x)
+        face_last = face_out[:, -1, :] 
+        
+        combined = torch.cat((phys_last, face_last), dim=1)
+        
+        out = self.fc1(combined)
+        out = self.relu(out)
+        out = self.dropout(out)
+        out = self.fc2(out)
+        
+        return out
 
 def extract_keypoints(results):
     pose = np.array([[res.x, res.y, res.z, res.visibility] for res in results.pose_landmarks.landmark]).flatten() if results.pose_landmarks else np.zeros(33*4)
@@ -42,27 +71,34 @@ def extract_keypoints(results):
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # 1. Load LSTM Gesture Model
-    model = GestureLSTM(INPUT_FEATURES, HIDDEN_SIZE, NUM_LAYERS, len(CLASSES)).to(device)
+    # 1. Load the new Dual-Stream Model
+    model = DualStreamASLModel(
+        physical_input_size=PHYSICAL_FEATURES, 
+        face_input_size=FACE_FEATURES, 
+        physical_hidden=PHYSICAL_HIDDEN_SIZE, 
+        face_hidden=FACE_HIDDEN_SIZE, 
+        num_layers=NUM_LAYERS, 
+        num_classes=len(CLASSES)
+    ).to(device)
+    
     try:
-        model.load_state_dict(torch.load('models/dynamic_gesture_model.pth', map_location=device))
+        model.load_state_dict(torch.load('models/dual_stream_gesture_model.pth', map_location=device))
         model.eval()
-        print("Gesture Model loaded.")
+        print("Dual-Stream Model loaded.")
     except Exception as e:
-        print(f"Error loading model: {e}. Train the model first!")
+        print(f"Error loading model: {e}. Make sure you train the dual_stream model first!")
         return
 
-    # 2. Load NLP & Speech System
+    # 2. Load NLP Translator
     print("Initializing NLP Translator...")
     translator = ASLTranslator()
 
     cap = cv2.VideoCapture(0)
     
-    # Tracking variables
     sequence = deque(maxlen=MAX_FRAMES)
     current_prediction = "Waiting..."
-    current_sentence = []       # Holds the raw ASL glosses (e.g., ["store", "he", "go"])
-    translated_display = ""     # Holds the final fluent sentence
+    current_sentence = []       
+    translated_display = ""     
 
     with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
         while cap.isOpened():
@@ -75,64 +111,65 @@ def main():
             image.flags.writeable = True
             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
             
+            # Extract full 1662 array
             keypoints = extract_keypoints(results)
             sequence.append(keypoints)
 
-            # Predict if we have enough frames
+            # Once we have 50 frames, form the prediction
             if len(sequence) == MAX_FRAMES:
-                input_data = np.expand_dims(np.array(sequence), axis=0) # [1, 50, 1662]
-                input_tensor = torch.FloatTensor(input_data).to(device)
+                # Shape is (50, 1662)
+                seq_array = np.array(sequence) 
+                
+                # --- Split the data exactly as we did in the Dataset Class ---
+                pose_data = seq_array[:, POSE_START:POSE_END]           # (50, 132)
+                face_data = seq_array[:, FACE_START:FACE_END]           # (50, 1404)
+                hands_data = seq_array[:, HANDS_START:HANDS_END]         # (50, 126)
+                
+                phys_data_np = np.concatenate([pose_data, hands_data], axis=1) # (50, 258)
+                
+                # Add batch dimension -> Shape becomes (1, 50, channels)
+                phys_data_tensor = torch.FloatTensor(np.expand_dims(phys_data_np, axis=0)).to(device)
+                face_data_tensor = torch.FloatTensor(np.expand_dims(face_data, axis=0)).to(device)
                 
                 with torch.no_grad():
-                    output = model(input_tensor)
+                    # Pass the two streams into the model
+                    output = model(phys_data_tensor, face_data_tensor)
                     probabilities = torch.nn.functional.softmax(output[0], dim=0)
                     predicted_idx = torch.argmax(probabilities).item()
                     confidence = probabilities[predicted_idx].item()
                     
-                    # High confidence threshold to avoid garbage data
                     if confidence > 0.85:  
                         word = CLASSES[predicted_idx]
                         current_prediction = f"{word} ({confidence*100:.1f}%)"
                         
-                        # Add word to sentence if it's not the same as the last recorded word
                         if len(current_sentence) == 0 or current_sentence[-1] != word:
                             current_sentence.append(word)
 
-            # --- Visual Display ---
-            # 1. Top bar: Current real-time gesture prediction
+            # Visual Display
             cv2.rectangle(image, (0,0), (640, 40), (245, 117, 16), -1)
             cv2.putText(image, current_prediction, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
             
-            # 2. Bottom bar: The accumulated ASL sentence
             cv2.rectangle(image, (0, 380), (640, 420), (50, 50, 50), -1)
             raw_text_display = " ".join(current_sentence)
             cv2.putText(image, f"ASL: {raw_text_display}", (10, 410), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2, cv2.LINE_AA)
 
-            # 3. Lowest bar: The translated English sentence
             cv2.rectangle(image, (0, 420), (640, 480), (100, 30, 30), -1)
             cv2.putText(image, f"Speech: {translated_display}", (10, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
             
-            cv2.imshow('Dynamic ASL System (End-to-End)', image)
+            cv2.imshow('Dual-Stream ASL Engine', image)
 
-            # --- Key Press Logic ---
             key = cv2.waitKey(10) & 0xFF
-            if key == ord('q'):         # Quit
+            if key == ord('q'):         
                 break
-            elif key == 8:              # Backspace: clear the sentence
+            elif key == 8:              
                 current_sentence = []
                 translated_display = ""
-            elif key == 32:             # Spacebar: Translate and Speak
+            elif key == 32:             
                 if len(current_sentence) > 0:
-                    print(f"Translating: {current_sentence}")
                     translated_display = translator.translate_gloss_to_english(current_sentence)
-                    print(f"Result: {translated_display}")
-                    
-                    # Force window update before freezing to speak
-                    cv2.imshow('Dynamic ASL System (End-to-End)', image)
+                    cv2.imshow('Dual-Stream ASL Engine', image)
                     cv2.waitKey(1)
-                    
                     translator.speak(translated_display)
-                    # Optional: clear the sentence after speaking
                     current_sentence = []
 
     cap.release()
