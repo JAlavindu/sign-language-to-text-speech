@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 # Paths
 WLASL_JSON_PATH = os.path.join("datasets", "WLASL_v0.3.json") # Ensure you downloaded this
-RAW_VIDEOS_DIR = r"D:\projects\WLASL\WLASL\start_kit\raw_videos"     # Where your 5000 mp4s are
+RAW_VIDEOS_DIR = os.path.join("datasets", "wlasl_videos")     # Where your 5000 mp4s are
 ORGANIZED_DIR = os.path.join("datasets", "wlasl_organized")   # Output folder
 
 def organize_dataset():
