@@ -67,21 +67,29 @@ def main():
         print(f"Please create the directory: {VIDEO_DIR} and add your MP4 files.")
         return
 
-    video_files = [f for f in os.listdir(VIDEO_DIR) if f.endswith('.mp4')]
-    print(f"Found {len(video_files)} videos to process.")
-    
     # Set up the MediaPipe Model context
     with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
-        for video_file in tqdm(video_files, desc="Extracting Keypoints"):
-            video_path = os.path.join(VIDEO_DIR, video_file)
+        # Loop through label folders (e.g. 'hello', 'apple')
+        for class_name in os.listdir(VIDEO_DIR):
+            class_path = os.path.join(VIDEO_DIR, class_name)
+            if not os.path.isdir(class_path):
+                continue
+                
+            # Create a corresponding output folder (datasets/processed_keypoints/hello/)
+            output_class_path = os.path.join(OUTPUT_DIR, class_name)
+            os.makedirs(output_class_path, exist_ok=True)
+
+            video_files = [f for f in os.listdir(class_path) if f.endswith('.mp4')]
             
-            # Create matching .npy filename
-            file_name_without_ext = os.path.splitext(video_file)[0]
-            output_path = os.path.join(OUTPUT_DIR, f"{file_name_without_ext}.npy")
-            
-            # Skip if already processed (allows resuming interrupted extractions)
-            if not os.path.exists(output_path):
-                process_video(video_path, output_path, holistic)
+            print(f"Extracting {len(video_files)} videos for '{class_name}'...")
+            for video_file in tqdm(video_files, leave=False):
+                video_path = os.path.join(class_path, video_file)
+                
+                file_name_without_ext = os.path.splitext(video_file)[0]
+                output_path = os.path.join(output_class_path, f"{file_name_without_ext}.npy")
+                
+                if not os.path.exists(output_path):
+                    process_video(video_path, output_path, holistic)
 
     print(f"Extraction complete! Data saved to {OUTPUT_DIR}")
 
