@@ -8,7 +8,7 @@ from tqdm import tqdm
 mp_holistic = mp.solutions.holistic
 
 # Configuration - Update these paths once you download the WLASL dataset
-VIDEO_DIR = os.path.join("datasets", "wlasl_videos")
+VIDEO_DIR = os.path.join("datasets", "wlasl_organized")
 OUTPUT_DIR = os.path.join("datasets", "processed_keypoints")
 
 def extract_keypoints(results):
